@@ -658,6 +658,42 @@ def _engine_api():
     return api
 
 
+def _json(v: Any) -> Any:
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except ValueError:
+            return v
+    return v
+
+
+@app.get("/learning")
+def learning() -> dict:
+    """Version N+1 for the console: playbook rules with the fork that proved each one, and the
+    eval rows (crew v0 vs crew vN on the test scenarios, static as the reference line)."""
+    rules = []
+    for r in _q("playbook_rules"):
+        ev = _json(r.get("evidence")) or {}
+        rid = ev.get("run_id") if isinstance(ev, dict) else None
+        fid = ev.get("fork_run_id") if isinstance(ev, dict) else None
+        rules.append({"version": r["version"], "rule_id": r["rule_id"], "role_id": role_of(r["role"])["id"],
+                      "role": role_name(r["role"]) or r["role"], "title": role_of(r["role"]).get("title", ""),
+                      "tags": _json(r.get("tags")) or [], "trigger": plain_text(str(_json(r.get("trigger")) or "")),
+                      "advice": plain_text(r["advice"]), "score_delta": r["score_delta"], "status": r["status"],
+                      "day": ev.get("day") if isinstance(ev, dict) else None, "run_id": rid, "fork_run_id": fid,
+                      "compare": f"{rid},{fid}" if rid and fid and store().get_run(rid) and store().get_run(fid) else None})
+    rows = [dict(r, metrics=_json(r.get("metrics")) or {}) for r in _q("eval_results")]
+    gate = [r for r in rows if r["contender"] == "gate"]
+    by: dict[str, dict[str, list[float]]] = {}
+    for r in rows:
+        if r["contender"] == "gate" or r["metrics"].get("score") is None:
+            continue
+        name = r["contender"] if r["contender"] != "crew" else "crew_v0"
+        by.setdefault(r["scenario_id"], {}).setdefault(name, []).append(float(r["metrics"]["score"]))
+    scen = [{"scenario": k, "scores": {c: sum(v) / len(v) for c, v in cs.items()}} for k, cs in sorted(by.items())]
+    return {"rules": rules, "scenarios": scen, "gate": gate[-1]["metrics"] if gate else None}
+
+
 @app.get("/forks/presets")
 def fork_presets() -> dict:
     return {"presets": PRESETS}

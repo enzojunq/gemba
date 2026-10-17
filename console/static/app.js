@@ -5,6 +5,7 @@ import { Timeline } from "./timeline.js";
 import { Cascade } from "./cascade.js";
 import { Compare } from "./compare.js";
 import { ScenarioDialog } from "./scenario.js";
+import { Learning } from "./learning.js";
 
 const $ = (s) => document.querySelector(s);
 const state = { runId: null, run: null, speed: 4, playing: false, es: null, day: null, hourIdx: 0, nHours: 24, lastBundle: null };
@@ -39,6 +40,8 @@ const timeline = new Timeline($("#timeline"), {
 const compare = new Compare($("#compare"), { onCascade: (runId, id, label) => openCascade(runId, id, label, true) });
 $("#cascade-close").addEventListener("click", () => cascade.hide());
 $("#board-close").addEventListener("click", () => { $("#board").hidden = true; });
+const learning = new Learning($("#learn-dlg"));
+$("#btn-learning").addEventListener("click", () => learning.open());
 $("#btn-board").addEventListener("click", () => { const b = $("#board"); b.hidden = !b.hidden; if (!b.hidden) renderBoard(); });
 
 // ---------------------------------------------------------------- boot

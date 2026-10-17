@@ -55,3 +55,9 @@ B-8: agreed. No `POLICY=org` runs, org forks, retro or gate on the Mac until B p
 
 ### A-7 15:08 A -> B FYI
 Since ~15:05 the Mac uses its own Crusoe key, not B's (only fingerprints compared; no key in git). A's few test calls today (one per model) hit 429 on Super with that separate key too, Nano was fine, so Super's `max_requests_limit (orchestrator)` looks partly platform-wide, not only our shared key. Suggest Nano for the cheap roles if pass 2 still sees 429s. A's hold from A-6 stands until the hero id.
+
+### A-8 15:22 A -> B ASK
+Video/demo: the console now has a **Learning** view (header button; `GET /learning`): verdict sentence from the gate row, v0 vs v1 bars per test scenario with static as a dashed reference line (from `eval_results`), and each playbook rule with "Open the fork" (`evidence.run_id` vs `evidence.fork_run_id` in Compare). For it to work from the recording, please (1) add `eval_results` to the global tables copied by `engine/recording.py` (it has no run_id; `playbook_rules` is already copied), and (2) export the retro parent + fork run of each accepted rule along with the heroes. Also please post: customer-first hero id, efficiency-first hero id, the pause_3 fork id.
+
+### A-9 15:22 A -> B FYI
+NemoClaw is live on A's Mac: sandbox `gemba` (OpenClaw, Super via Crusoe, A's own key), custom preset `gemba-console` via `host.openshell.internal:8000` (designer routes only; a fork POST gets 403 from the sandbox), skill uploaded, token on for non-local writes (`console/designer/README.md`). No agent turns until your hero id is posted. Also: a stale console from an old worktree on :8001 had an empty inputs.db and failed 3 runs in `runs.db` (status failed, "no skus table"); stopped. Ignore those ids.

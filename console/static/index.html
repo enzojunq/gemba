@@ -58,6 +58,7 @@
     <button class="btn" id="btn-scenario" title="Tweak or write a scenario and run it"><svg class="ic"><use href="#i-bolt"/></svg>Scenario</button>
     <button class="btn" id="btn-compare"><svg class="ic"><use href="#i-compare"/></svg>Compare</button>
     <button class="btn" id="btn-board"><svg class="ic"><use href="#i-board"/></svg>Board</button>
+    <button class="btn" id="btn-learning" title="Did the org get better? Lessons kept and the test on unseen scenarios"><svg class="ic"><use href="#i-check"/></svg>Learning</button>
     <button class="btn btn-icon" id="btn-theme" aria-label="Toggle light and dark theme"><svg class="ic ic-sun"><use href="#i-sun"/></svg><svg class="ic ic-moon"><use href="#i-moon"/></svg></button>
   </div>
 </header>
@@ -157,6 +158,16 @@
   </form>
 </dialog>
 
+<dialog class="dlg dlg-wide dlg-learn" id="learn-dlg" aria-labelledby="learn-h">
+  <div class="dlg-form">
+    <div class="learn-head">
+      <h3 id="learn-h"><svg class="ic"><use href="#i-check"/></svg>Learning · Version N+1</h3>
+      <p class="dlg-lede">After each month the org reviews its worst days, proves a better move by forking that day, and keeps the lesson only if the new playbook wins on scenarios it has never seen.</p>
+      <button type="button" class="btn btn-icon btn-ghost" id="learn-close" aria-label="Close learning"><svg class="ic"><use href="#i-x"/></svg></button>
+    </div>
+    <div id="learn-body"></div>
+  </div>
+</dialog>
 <dialog class="dlg dlg-wide" id="scenario-dlg">
   <form method="dialog" class="dlg-form sc-form" id="scenario-form" onsubmit="return false">
     <div class="sc-head">

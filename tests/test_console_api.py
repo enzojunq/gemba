@@ -276,3 +276,8 @@ def test_describe_uses_designer_without_network(client, monkeypatch):
     monkeypatch.setattr(sd, "describe", lambda text, llm=None, **kw: bad)
     j = client.post("/scenarios/describe", json={"text": "what time is lunch"}).json()
     assert not j["ok"] and "not a scenario" in j["errors"][0] and j["scenario"] == {}
+
+
+def test_learning_empty_store_has_shape(client):
+    j = client.get("/learning").json()
+    assert set(j) == {"rules", "scenarios", "gate"}
