@@ -72,7 +72,7 @@ def test_events_lower_kpis():
 def test_c2_fires_with_decision_attribution():
     lv = {d: [reslot(280, f"d{d}")] for d in range(61, 64)}
     _, results, cons = _run(StubTwin(), lv, days=range(61, 65))
-    assert results[1].kpis.mispick_rate_by_customer["KEY1"] > 0.8
+    assert results[1].kpis.mispick_rate_by_customer["C001"] > 0.8
     c2 = [e for e in cons if e.kind == "customer_escalation"]
     assert len(c2) == 1 and c2[0].caused_by.startswith("dec:") and c2[0].day == 64
     c6 = [e for e in cons if e.kind == "director_escalation"]
@@ -82,7 +82,7 @@ def test_c2_fires_with_decision_attribution():
 
 def test_protecting_key_customer_prevents_c2():
     lv = {d: [reslot(280, f"d{d}")] for d in range(61, 64)}
-    lv[61].append(c.Protect(target="customer", ids=["KEY1"], days=10, decision_id="p"))
+    lv[61].append(c.Protect(target="customer", ids=["C001"], days=10, decision_id="p"))
     _, _, cons = _run(StubTwin(), lv, days=range(61, 65))
     assert not [e for e in cons if e.kind == "customer_escalation"]
 

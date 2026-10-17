@@ -25,7 +25,7 @@ DEFAULT_LABOR: dict[str, dict[str, int]] = {
 MOVES_TARGET = 2400
 MAX_LEGS_PER_NIGHT = 280
 TEMP_POOL_MAX = 8
-KEY_CUSTOMER = "KEY1"
+KEY_CUSTOMER = "C001"  # same id as the key customer in data/gen.py, so scenarios work on both twins
 ON_TIME_TARGET = 95.0
 """C6 escalation threshold. Spec 9.4 says "< profile target" (97), but 9.3a calibrates normal
 days at 94–97%, which would escalate the Director almost daily. Stub uses target − 2, the same
