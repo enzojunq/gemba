@@ -42,23 +42,21 @@ One section per lane: what was built, how it is tested, what is pending. Issue #
 
 **Measured (real inputs.db, seed 1).** `step_day` 72–80 ms; 3-day `whatif` ~0.5 s; 30-day loop 2.8 s. Plan from `slotting_target`: 1,122 SKU moves, 2,680 legs (779 swaps); static rules reach 95–97% progress by day 83.
 
-**Calibration (seed 1, days 61–90, inputs.db regenerated 12:57 with the zone-capped target; `uv run python -m floor.calibrate`).**
+**Calibration (seed 1, days 61–90, final inputs.db 13:00: zone-capped target, PM share 0.68, 2,164 legs / 463 swaps; `uv run python -m floor.calibrate`).**
 
 | Target (spec 9.3a) | Measured | Holds |
 |---|---|---|
 | 1. forklift utilization 0.80–0.95 (do-nothing, normal days) | 0.81 | ✓ |
-| 2. PM peak zone load 0.85–1.00 (do-nothing) | 1.34 (trap 5: zone 1 carries 5,633 lines/day vs 4,147 capacity); static rules bring it from 1.29 on day 61 to 0.77 on day 90 | data trap; falls with progress ✓ |
-| 3. on-time 94–97 normal days; < 90 on the labor-shortage day | 95.2% · 85.5% | ✓ |
-| 4. oracle LPH lift +15–30% | +19.4% (71.2 → 85.0); static rules +20% | ✓ |
-| 5. big bang: ≥ 1 jam hour, mis-picks > 1% for 2 days, staging overflow | jam 0, mis-picks 0.85/0.82% on days 62–63, staging max 45% | ✗ (plan is only 1,190 legs now, see below) |
+| 2. PM peak zone load 0.85–1.00 | do-nothing 1.34 (trap 5: zone 1 carries 5,633 lines/day vs 4,147 capacity); static rules 1.29 (d61) → 1.21 (d75) → 0.77 (d90) | trap by design; falls with progress ✓ |
+| 3. on-time 94–97 normal days; < 90 on the labor-shortage day | do-nothing 95.2% · 85.5%; static 96.5% normal days | ✓ |
+| 4. oracle LPH lift +15–30% | +18.9% (71.2 → 84.7); static rules +21.6% | ✓ |
+| 5. big bang: ≥ 1 jam hour, mis-picks > 1% for 2 days, staging overflow | 8 jam hours (d63, on-time 75%), mis-picks 1.19% / 1.63% (d62–63), staging 100% on three nights, C4 → C2 → C6 all fire | ✓ |
 
-Static rules (200/night): normal-day on-time 96.6% (do-nothing 95.2), 0.0 jam h/day, on-time from day 75 96.0 vs 94.2 do-nothing, progress 99% by day 73. Hero cascade: big bang fires C2 `customer_escalation` caused by `dec:` on seed 1 (test covers seeds 1–3). Tuned constants (`floor/constants.py`): `FORKLIFT_PER_M` 0.8→0.65, `REPLEN_TRIP_SECONDS` 360→300, `CARRY_HOURS` 2, `PM_FLEX_PENALTY` 1.25, `FORKLIFT_HELPS_PM` with `FORKLIFT_HELP_FRACTION` 0.5 (idle forklift pickers tote-pick in the PM at ×1.25, half their idle time).
-
-**Plan size after the regeneration.** The rebalanced `slotting_target` (zones [3344, 3232, 2428, 2382, 2383, 2390] lines/day, PM share 68%) diffs to 938 SKU moves and 1,190 legs (126 swaps), not the ~2,400 legs of spec 7.1, so static rules finish the reslot in 6 nights and big bang in 2. If the 12-night story matters, lane A1 should raise the changed-slot count (e.g. more swaps into occupied slots) rather than the twin inflating legs.
+Static rules (200/night): 7 jam hours over 30 days (event days only), progress 96.6% by day 90, staging max 44%. Big bang cascade on seeds 1 and 2: `staging_congestion` (caused by `dec:` day 62) → `customer_escalation` (caused by `dec:` day 61) → `director_escalation` (`kpi:` on-time). Tuned constants (`floor/constants.py`): `FORKLIFT_PER_M` 0.8→0.65, `REPLEN_TRIP_SECONDS` 360→300, `CARRY_HOURS` 2, `PM_FLEX_PENALTY` 1.25, `FORKLIFT_HELPS_PM` with `FORKLIFT_HELP_FRACTION` 0.5 (idle forklift pickers tote-pick in the PM at ×1.25, half their idle time), `CREW_LEGS_PER_NIGHT` 280 with `DIP_OVERLOAD_MAX` 2 (a night beyond the regular crew's 280 legs scales that night's SKUs' dip time and mis-pick multipliers up to ×2: sloppier putaway; static at 200 is unaffected). Night legs run in waves across the night (every approved move's first leg, then second, then third), so an overloaded night fills staging and leaves swaps in flight.
 
 **Modelling decisions.** PM pickers flex across zones at ×1.25 (otherwise zone 1 backlog never clears); `pm_peak_zone_load` = busiest zone's daily work ÷ its own capacity; pallet lines pick from reserve and do not deplete active slots; `demand_surge` is applied by the twin as line duplication (actual and forecast), so the generator must not bake the day-69 surge; temps work day forklift and join night moves; `labor_shortage` scales all shifts of the pool; `n_moves` = legs; unfinished approved legs carry to the next night under the same decision; `overtime_hours` is person-hours.
 
-**Open questions / asks.** (1) lane A1 resized `active_capacity_units` (3–6 days cover, ~458 JIT trips/day): done, reloaded; the open ask is the balanced `slotting_target` above. (2) B: C6 fires on any 2-day streak below 95; with on-time ~95 on normal days it will fire a few times per run under do-nothing (expected). (3) `reslot_default.yaml` leadership visit freezes aisles 10–14 (B's `test_engine.py` hardcodes that list; the brief said 12–16). (4) C4 staging_congestion only fires when a night leaves > 135 swaps in flight (big bang with temps).
+**Open questions / asks.** (1) lane A1 delivered resized slot capacities and the zone-capped, swap-heavy target: all reloaded, nothing open. (2) B: C6 fires on any 2-day streak below 95; with on-time ~95 on normal days it will fire a few times per run under do-nothing (expected). (3) `reslot_default.yaml` leadership visit freezes aisles 10–14 (B's `test_engine.py` hardcodes that list; the brief said 12–16). (4) C4 staging_congestion only fires when a night leaves > 135 swaps in flight (big bang with temps).
 
 ## Lane A3 — console (`console/`) · first pass built, polish ongoing
 
@@ -91,3 +89,4 @@ URL params: `run=<id>`, `day=<d>`, `autoplay=0`, `compare=<a>,<b>`.
 2. `write_day` stores `Decision.constraints` with `owner_role = decision.decided_by`, so a lock Ellen issued shows "Megan" on the board. Could the constraint carry the issuing role (e.g. an `owner_role` on the constraint event args, or a parallel list on `Decision`)?
 3. Please confirm `utterances.role` is the person's first name as in the spec roster (Megan, Ryan, Luke, Paige, Dana, Sam, Ellen, Marcus, Tom); the meeting room keys seats by that name.
 4. Quiet days: does the engine write a `meetings` row with `kind="quiet"` plus one Megan utterance (spec 10.5), or only `decisions.rationale`? The console renders both, but the one-line note reads better as an utterance.
+5. Fields the meeting room keys on (please align the org writers): `utterances.role` = first name (Megan, Ryan, Luke, Paige, Dana, Sam, Ellen, Marcus, Tom); `utterances.kind` ∈ proposal | position | veto | lock | question | decision; `options.option_id` ending in `-A`/`-B`/… gives the option letter; `meetings.kind` ∈ standup | escalation | quiet.

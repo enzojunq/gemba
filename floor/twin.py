@@ -68,7 +68,7 @@ class Twin:
         st = FloorState(seed=scenario.seed, day=scenario.days[0], scenario_id=scenario.id,
                         sku_loc=inp.current_loc.astype(np.int32).copy(), sku_cap=inp.current_cap.astype(float).copy(),
                         inventory=inp.current_cap.astype(float).copy(), labor=labor,
-                        dip_day=np.zeros(n, dtype=np.int32), key_customer=(inp.key_customers[0] if inp.key_customers else ""))
+                        dip_day=np.zeros(n, dtype=np.int32), dip_mult=np.ones(n, dtype=float), key_customer=(inp.key_customers[0] if inp.key_customers else ""))
         st.loc_occupant = {int(l): i for i, l in enumerate(st.sku_loc) if l >= 0}
         velocity = inp.velocity_hist if inp.velocity_hist is not None else inp.sku_velocity(range(1, 61))
         plan = phaser.build_plan(inp, st, inp.target_loc, velocity)

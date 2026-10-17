@@ -71,6 +71,7 @@ class FloorState:
     # dips and timers
     dip_day: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int32))   # day the SKU was moved (night of)
     dip_decision: dict[int, str] = field(default_factory=dict)                            # sku idx -> decision id
+    dip_mult: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))        # per sku: overload factor of the night it moved (1..2)
     carry_work: dict[str, float] = field(default_factory=dict)   # pool -> seconds of backlog from yesterday
     # events
     effects: list[ActiveEffect] = field(default_factory=list)

@@ -133,6 +133,9 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
     for e in s.effect_active("new_sku_launch", day):
         extra_fork += float(e.args.get("n", 10)) * 5 * (K.FORKLIFT_BASE + K.FORKLIFT_PER_M * 66)
     dip = s.dip_mask(day)
+    if len(s.dip_mult) != n_sku:
+        s.dip_mult = np.ones(n_sku, dtype=float)
+    dip_over = np.where(dip, s.dip_mult, 1.0)
     units_per_pallet = inputs.skus["units_per_pallet"].to_numpy(dtype=float) if "units_per_pallet" in inputs.skus else np.full(n_sku, 48.0)
 
     # ------------------------------------------------------------------ line arrays
@@ -159,7 +162,8 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
     svc = np.where(is_pallet, K.PALLET_SECONDS, base)
     svc = np.where(in_closed & ~is_pallet, base * K.FROZEN_TO_PALLET, svc)
     dip_line = known & dip[sku_safe]
-    svc = svc * np.where(dip_line, K.DIP_TIME, 1.0)
+    over_line = np.where(dip_line, dip_over[sku_safe], 1.0)
+    svc = svc * np.where(dip_line, 1.0 + (K.DIP_TIME - 1.0) * over_line, 1.0)
     if congested:
         svc = svc * np.where(np.isin(aisle, K.STAGING_ADJACENT_AISLES) & (kind != 0), K.CONGESTION_TIME, 1.0)
     work = svc.copy()
@@ -192,7 +196,7 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
     # mis-pick probability per line (expected) and uniform draws keyed by (seed, day, order_id, line_no)
     p_base = np.where(kind == 0, K.MISPICK_PM, K.MISPICK_FORKLIFT)
     p_base = np.where(is_pallet, K.MISPICK_PALLET, p_base)
-    p_line = p_base * np.where(dip_line, K.DIP_MISPICK, 1.0) * np.where(dip_line & wms, K.WMS_MISPICK, 1.0)
+    p_line = p_base * np.where(dip_line, K.DIP_MISPICK * over_line, 1.0) * np.where(dip_line & wms, K.WMS_MISPICK, 1.0)
     fork_hc = hc["day"]["forklift"]
     temp_share = (K.TEMP_PRODUCTIVITY * temps_ramp) / max(fork_hc + K.TEMP_PRODUCTIVITY * temps, 1e-9) if temps else 0.0
     p_line = p_line * np.where(route == ROUTE_FORKLIFT, 1.0 + temp_share * (K.TEMP_MISPICK - 1.0), 1.0)
@@ -246,6 +250,8 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
     approved = [m for m in s.moves if m.approved and m.legs_done < m.legs]
     approved.sort(key=lambda m: (0 if m.legs_done > 0 else 1, m.seq))
     legs_budget_carry = 0.0
+    legs_tonight = sum(m.legs - m.legs_done for m in approved)
+    overload = float(min(K.DIP_OVERLOAD_MAX, max(1.0, legs_tonight / K.CREW_LEGS_PER_NIGHT)))
 
     for h in K.DAY_HOURS:
         ha = h if h >= 6 else h + 24
@@ -447,7 +453,7 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
             legs_cap = av["night_move"] * 3600.0 / K.MOVE_LEG_SECONDS + legs_budget_carry
             n_legs = int(legs_cap)
             legs_budget_carry = legs_cap - n_legs
-            done_legs, sample, stalled, legs_by_aisle = _execute_legs(inputs, s, approved, n_legs, frozen, day)
+            done_legs, sample, stalled, legs_by_aisle = _execute_legs(inputs, s, approved, n_legs, frozen, day, overload)
             moves_h["done"] = done_legs
             moves_h["sample"] = sample
             moves_done_tonight += done_legs
@@ -564,8 +570,8 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
     return c.DayResult(day=day, kpis=kpis, hourly={"version": 1, "day": int(day), "hours": hourly}, violations=violations)
 
 
-def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: int, frozen: set[int], day: int
-                  ) -> tuple[int, list[dict], int, dict[int, int]]:
+def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: int, frozen: set[int], day: int,
+                  overload: float = 1.0) -> tuple[int, list[dict], int, dict[int, int]]:
     """Execute up to `n_legs` legs of the approved moves in order.
     Returns (legs done, sample for the animation, stalled legs, legs touching each aisle)."""
     done = 0
@@ -588,6 +594,7 @@ def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: i
             sample.append({"sku": str(sku_ids.iloc[sku]), "from": str(loc_ids.iloc[frm]) if frm >= 0 else "",
                            "to": str(loc_ids.iloc[to]) if to >= 0 else ""})
         s.dip_day[sku] = day
+        s.dip_mult[sku] = overload
         if dec:
             s.dip_decision[sku] = dec
         for l in (frm, to):
@@ -649,21 +656,16 @@ def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: i
         record(m.sku, inputs.loc_index.get("ST-001", -1), tgt, m.decision_id)
         return True
 
-    # waves: finish swaps already in flight, then first legs of everything approved (staging permitting),
-    # then second legs, then third legs. Staging fills when a night cannot finish what it started.
-    in_flight = [m for m in approved if 0 < m.legs_done < m.legs]
-    fresh = [m for m in approved if m.legs_done == 0]
-    for m in in_flight:
-        while done < n_legs and m.legs_done < m.legs:
-            if not one_leg(m):
-                break
+    # Waves across the night: the crew starts every approved move first (direct moves complete, swaps
+    # take a staging slot), then runs second legs, then third legs. Staging fills when a night starts
+    # more swaps than it can finish; what is left carries to the next night.
     for wave in (1, 2, 3):
-        for m in fresh:
+        for m in approved:
             if done >= n_legs:
                 break
             if m.legs_done == wave - 1 and m.legs_done < m.legs:
-                if not one_leg(m):
-                    if wave == 1 and not free_staging:
-                        stalled += 1
-    stalled += sum(1 for m in fresh if m.legs_done == 0 and done < n_legs and not free_staging)
+                if not one_leg(m) and wave == 1 and not free_staging:
+                    stalled += 1
+    if done < n_legs:
+        stalled += sum(1 for m in approved if m.legs_done == 0 and not free_staging)
     return done, sample, stalled, legs_by_aisle
