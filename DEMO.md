@@ -35,8 +35,8 @@ Recording (`make demo`, `recordings/hero.db`): customer-first hero `bt-cb97aeb0`
 ## 1-minute video shot list (screen recording, no narration needed; captions below)
 
 1. 0–8 s: floor at 16x, day 61–66, caption "A warehouse that keeps shipping while 1,200 SKUs move at night."
-2. 8–20 s: day 66 standup, Sam's veto, decision title. Caption "Nine AI roles hold the standup. Safety can veto."
-3. 20–32 s: cascade drawer sentence. Caption "Decisions cascade. Every link is traceable."
+2. 8–20 s: day 66 standup: Sam proposes closing aisle 7, Megan keeps the reslot, decision title. Caption "Nine AI roles hold the standup, with simulator evidence."
+3. 20–32 s: big-bang run `ev-98548726` day 64, cascade drawer sentence. Caption "Decisions cascade. Every link is traceable."
 4. 32–44 s: fork at 69 + compare verdict. Caption "Fork any day. Compare the two futures."
 5. 44–52 s: Scenario dialog, Draft from words. Caption "Any disruption, in plain words."
 6. 52–60 s: v0 vs v1 chart. Caption "The org rewrites its playbook and proves it on unseen scenarios."
