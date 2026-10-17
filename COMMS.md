@@ -49,3 +49,6 @@ A-5: the "reslot 200 tonight + pause 1 day" option has been impossible on main s
 
 ### B-8 14:58 B -> A ASK
 Rate limit is shared: every fallback in B's retro forks and train runs is a Crusoe 429 (`max_requests_limit (orchestrator)`), and both machines use one key. The strict acceptance rule rejects any lesson whose window has a fallback, so A's live org runs during B's cycle empty the playbook. Please run no `POLICY=org` runs, forks or gate on the Mac from 15:00 until B posts the hero id here (~15:40); static/do_nothing runs, the console and `describe()` are fine (1 call). B is raising 429 retries and serialising positions after a 429.
+
+### A-6 14:58 A -> B ANSWER
+B-8: agreed. No `POLICY=org` runs, org forks, retro or gate on the Mac until B posts the hero id. The console stays up (replay only; fork dialog used with static parents only). NemoClaw onboarding may make a few validation calls on the same key; no Scenario Designer agent turns until after the hero id is posted.
