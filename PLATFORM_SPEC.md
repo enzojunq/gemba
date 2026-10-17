@@ -386,7 +386,7 @@ Typed, validated by code, mapped to `FloorTwin.apply_levers`.
 | `resize_slots` | skus, days_cover | chair (proposed by replenishment or engineer) | moves needed, fewer replen trips |
 | `wave_priority` | rush_first, by_cutoff, by_zone | ops_manager | changes queue order |
 | `close_aisle` / `reopen_aisle` | aisle, days | safety | routes picks elsewhere |
-| `staging_clearance` | n_movers, night | chair | movers clear staging instead of new moves |
+| `staging_clearance` | n_movers | chair | tonight's movers clear staging instead of new moves |
 | `set_profile` | profile weights | director | changes the scorecard |
 | `escalate` | question | chair | opens an escalation meeting |
 

@@ -75,6 +75,7 @@ A discriminated union on `kind`. Every lever carries `decision_id: str`.
 | `staging_clearance` | `n_movers: int` |
 
 - `Pool` = `"pm" | "forklift" | "pallet" | "replen" | "consolidation" | "loading" | "night_move" | "temp"`.
+- `decision_id` defaults to `""` while a lever is only proposed (agents never invent ids). B stamps it at commit. It is never empty when the lever reaches `apply_levers`.
 - `set_profile` and `escalate` are **not** floor levers. They never reach the twin (B handles them in the org/engine).
 - A **must** tag every SKU move, overtime hour and staging slot with the lever's `decision_id`. C1/C2/C3/C4 attribution depends on it.
 
@@ -169,7 +170,7 @@ class DecisionPolicy(Protocol):
 ```
 state = twin.initial_state(scenario)
 checks = policy.pick_thresholds(verifier.template(profile))
-for day in scenario.days:
+for day in scenario.day_range:
     events   = calendar[day] + inbox(run_id, day) + pending_consequences[day]
     view     = twin.view(state)
     decision = policy.decide(day, view, visible(events, day), twin, state)

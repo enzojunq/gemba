@@ -52,21 +52,17 @@ ConsequenceKind = Literal[
     "customer_escalation", "absenteeism", "staging_congestion", "safety_review",
     "aisle_closure", "director_escalation", "replen_alert",
 ]
-EventKind = Literal[
-    # exogenous (spec 9.5)
-    "labor_shortage", "demand_surge", "rack_damage", "pm_zone_down", "leadership_visit",
-    "key_customer_week", "new_sku_launch", "returns_spike", "wms_sync_delay", "forklift_breakdown",
-    # consequence (spec 9.4)
-    "customer_escalation", "absenteeism", "staging_congestion", "safety_review",
-    "aisle_closure", "director_escalation", "replen_alert",
-]
+EventKind = Union[ExogenousKind, ConsequenceKind]
+EVENT_KINDS: tuple[str, ...] = ExogenousKind.__args__ + ConsequenceKind.__args__  # type: ignore[attr-defined]
 
 # --------------------------------------------------------------------------- 3.2 levers
 
 
 class _LeverBase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    decision_id: str
+    decision_id: str = ""
+    """Empty while proposed (agents never invent ids); B stamps it at commit via
+    `lever.model_copy(update={"decision_id": ...})`. Never empty when it reaches the twin."""
 
 
 class ReslotTonight(_LeverBase):
@@ -99,7 +95,7 @@ class Overtime(_LeverBase):
 class HireTemps(_LeverBase):
     kind: Literal["hire_temps"] = "hire_temps"
     count: int = Field(ge=1)
-    start_day: int
+    start_day: int = Field(ge=1, le=90)
     days: int = Field(ge=1)
 
 
@@ -169,6 +165,14 @@ class ScenarioEvent(BaseModel):
     hour: int = Field(default=6, ge=0, le=23)
     args: dict[str, Any] = {}
 
+    @model_validator(mode="after")
+    def _args_match_kind(self) -> "ScenarioEvent":
+        allowed = set(EVENT_ARGS[self.kind])
+        extra = set(self.args) - allowed
+        if extra:
+            raise ValueError(f"{self.kind}: unknown args {sorted(extra)}; allowed {sorted(allowed)}")
+        return self
+
 
 class Event(ScenarioEvent):
     event_id: str
@@ -177,7 +181,7 @@ class Event(ScenarioEvent):
     caused_by: CausedBy = None
 
 
-EVENT_ARGS: dict[str, list[str]] = {
+EVENT_ARGS: dict[EventKind, list[str]] = {
     # exogenous (spec 9.5). demand_surge takes exactly one of skus | family | customer.
     "labor_shortage": ["pool", "pct", "days"],
     "demand_surge": ["skus", "family", "customer", "factor", "days"],
@@ -237,6 +241,14 @@ class DayDemand(BaseModel):
     day: int
     orders: pd.DataFrame
     lines: pd.DataFrame
+
+    def __eq__(self, other: object) -> bool:  # pydantic's default == is ambiguous on DataFrames
+        return (
+            isinstance(other, DayDemand)
+            and self.day == other.day
+            and self.orders.equals(other.orders)
+            and self.lines.equals(other.lines)
+        )
 
 
 # --------------------------------------------------------------------------- 3.6 floor view
@@ -303,12 +315,20 @@ class Kpis(BaseModel):
 class DayResult(BaseModel):
     day: int
     kpis: Kpis
-    hourly: dict[str, Any] = {}  # owned by A; B stores it as opaque JSON
+    hourly: dict[str, Any] = {}
+    """Owned by A, stored by B as opaque JSON. Must contain only native Python types
+    (no numpy scalars/arrays: use `.tolist()` / `int()` / `float()`), or `write_day` fails."""
     violations: list[str] = []
 
 
 class WhatIf(BaseModel):
-    """Runs on forecast demand only; near-misses are expected values, not draws."""
+    """Runs on forecast demand only; near-misses are expected values, not draws.
+
+    `kpis_total` aggregates `kpis_by_day` per spec 10.4: mean for on_time_pct, mispick_rate,
+    lph, throughput_lph_site, mispick_rate_by_customer; sum for lines, labor_cost_usd,
+    overtime_hours, replen_trips, stockout_lines, jam_hours, moves_done, near_misses;
+    max for consolidator_queue_max, pm_peak_zone_load, staging_occupancy_max, safety_risk_max;
+    end-of-horizon value for reslot_progress_pct, moves_queued."""
     levers: list[Lever]
     days: int
     kpis_by_day: list[Kpis]
@@ -348,6 +368,11 @@ class Scenario(BaseModel):
         if self.days[0] > self.days[1]:
             raise ValueError("days must be [start, end] with start <= end")
         return self
+
+    @property
+    def day_range(self) -> range:
+        """Iterate simulated days: `for day in scenario.day_range`."""
+        return range(self.days[0], self.days[1] + 1)
 
 
 class Profile(BaseModel):
@@ -475,10 +500,10 @@ class DirectorRuling(BaseModel):
 
 
 class EventParse(BaseModel):
-    """Inbox text -> typed event."""
-    kind: str
+    """Inbox text -> typed event. B validates `args` against EVENT_ARGS before building an Event."""
+    kind: EventKind
     args: dict[str, Any]
-    confidence: float
+    confidence: float = Field(ge=0, le=1)
 
 
 class Lesson(BaseModel):

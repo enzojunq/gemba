@@ -21,8 +21,11 @@ def test_lever_union_parses_and_rejects_non_floor_levers():
 
 
 def test_event_tables_cover_every_kind():
-    kinds = set(c.EventKind.__args__)
+    kinds = set(c.EVENT_KINDS)
     assert len(kinds) == 17
+    with pytest.raises(ValidationError):  # args must match EVENT_ARGS[kind]
+        c.ScenarioEvent(kind="rack_damage", day=66, args={"bogus": 1})
+    assert c.Scenario(id="s", seed=1, days=(61, 63)).day_range == range(61, 64)
     assert set(c.EVENT_ARGS) == kinds
     assert set(c.ANNOUNCE_LEAD_DAYS) == kinds
     assert c.announced_day("leadership_visit", 78) == 73
