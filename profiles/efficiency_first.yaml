@@ -1,0 +1,5 @@
+id: efficiency_first
+weights: {lph: 0.35, labor_cost_usd: 0.25, reslot_progress_pct: 0.20, on_time_pct: 0.15, mispick_rate: 0.05}
+targets: {on_time_pct: 97.0, mispick_rate: 0.5, lph_lift_pct: 8}
+hard_limits: {safety_risk_max: 1.0, expected_near_misses: 0.5, pm_peak_zone_load: 1.10}
+budgets: {overtime_hours_per_week: 120, temps_max: 8, llm_usd_per_run: 1.50}
