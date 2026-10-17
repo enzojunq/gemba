@@ -1,0 +1,10 @@
+# Retro train scenario 3 (spec 13.1): 10-day window, seeded perturbation.
+id: train_3
+seed: 13
+days: [61, 70]
+events:
+  - {kind: rack_damage, day: 62, args: {aisle: 4, days: 3}}
+  - {kind: returns_spike, day: 65, args: {pct: 20, days: 2}}
+  - {kind: labor_shortage, day: 68, args: {pool: forklift, pct: 25, days: 2}}
+perturbation: {family_scale_pct: 10, seasonal_group_seed: 13, surge_shift_days: 2}
+overrides: {}

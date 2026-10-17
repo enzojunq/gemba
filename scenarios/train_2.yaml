@@ -1,0 +1,9 @@
+# Retro train scenario 2 (spec 13.1): 10-day window, seeded perturbation.
+id: train_2
+seed: 12
+days: [61, 70]
+events:
+  - {kind: key_customer_week, day: 63, args: {customer: KEY1, days: 5}}
+  - {kind: pm_zone_down, day: 66, args: {zone: 3, hours: 5}}
+perturbation: {family_scale_pct: -6, seasonal_group_seed: 12, surge_shift_days: -1}
+overrides: {}

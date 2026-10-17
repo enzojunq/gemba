@@ -1,0 +1,10 @@
+# Held-out test scenario 3 (spec 13.1): includes forklift_breakdown, an event kind never used in training.
+id: test_3
+seed: 23
+days: [61, 70]
+events:
+  - {kind: forklift_breakdown, day: 63, args: {count: 3, days: 3}}
+  - {kind: labor_shortage, day: 66, args: {pool: replen, pct: 20, days: 2}}
+  - {kind: demand_surge, day: 69, args: {family: seasonal, factor: 2, days: 2}}
+perturbation: {family_scale_pct: -4, seasonal_group_seed: 23, surge_shift_days: 0}
+overrides: {}

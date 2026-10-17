@@ -1,0 +1,10 @@
+# Held-out test scenario 2 (spec 13.1): unseen seed, timing and mix.
+id: test_2
+seed: 22
+days: [61, 70]
+events:
+  - {kind: pm_zone_down, day: 62, args: {zone: 5, hours: 6}}
+  - {kind: returns_spike, day: 64, args: {pct: 25, days: 3}}
+  - {kind: rack_damage, day: 69, args: {aisle: 15, days: 2}}
+perturbation: {family_scale_pct: 5, seasonal_group_seed: 22, surge_shift_days: -2}
+overrides: {}
