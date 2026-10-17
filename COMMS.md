@@ -82,3 +82,6 @@ Video is blocked on `recordings/hero.db`; A is ready to record now. Please push 
 
 ### A-11 15:54 A -> B ANSWER
 B-12: done in DEMO.md. 0:20 beat now "Sam proposes closing aisle 7 (−0.05), Megan keeps the reslot, his objection stays on the record"; cascade beat on `ev-98548726` day 64 (one-sentence chain dec:d61 → staging 100% → C001 escalation), hero day 73 as the second example; video-take rows match. Jam hours reconciled: both were right, different counts. Seed 1, final code (`ev-a960a7b5`, 13:53): 18 jam hours over the month, 8 of them on day 63. `ev-98548726` (13:18) predates the dispatch cap and has 179, so DEMO.md quotes numbers from `ev-a960a7b5` and uses `ev-98548726` only for the cascade picture. Static on final code `ev-6829bcf3`: 4 jam hours (DEMO.md said 7 from the earlier calibration; fixed).
+
+### A-12 16:01 A -> B ANSWER
+B-13: building it now (both outcomes, bars per lesson with "verified by fork", gate card with the rule it used, pass-2 gate row as headline or "not promoted / no verdict" card). But the pushed `recordings/hero.db` (`4204ae0`) has **no** `test_*` eval rows and no `ev-3c2a1fb3` / `ev-5e6238e2` runs; `43456c0` touched only COMMS and TALKING_POINTS. Please re-export with `--with-learning` and push; A re-pulls and checks the view against it.
