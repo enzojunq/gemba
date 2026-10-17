@@ -867,8 +867,11 @@ class OrgPolicy:
             s = (f"- `{self._disp_opt(o.option_id)}` \"{o.label}\" by {self.roles[o.proposed_by].name}: "
                  + ", ".join(lever_str(lv) for lv in o.levers))
             if k is not None:
+                ref_k = m.ref.kpis_total if getattr(m, "ref", None) is not None else None
+                dprog = (f" ({k.reslot_progress_pct - ref_k.reslot_progress_pct:+.1f} pp vs REF)"
+                         if ref_k is not None else "")
                 s += (f" | evidence `{self._disp_ev(o.evidence_id)}`: on_time {k.on_time_pct:.1f}%, mispick {k.mispick_rate:.2f}%, "
-                      f"lph {k.lph:.1f}, progress {k.reslot_progress_pct:.1f}%, cost ${k.labor_cost_usd:,.0f}, "
+                      f"lph {k.lph:.1f}, progress {k.reslot_progress_pct:.1f}%{dprog}, cost ${k.labor_cost_usd:,.0f}, "
                       f"exp near-misses {o.whatif.expected_near_misses:.2f}, safety_risk {o.whatif.safety_risk_max:.2f}")
             s += " | feasible" if o.feasible else f" | INFEASIBLE {o.feas.breaches if o.feas else ''}"
             if with_scores and o.score is not None:
@@ -1090,6 +1093,9 @@ class OrgPolicy:
                 "Pick one option. Rules: a vetoed or infeasible option cannot be chosen; picking a feasible option "
                 "other than the top score needs a rationale (logged as a deviation); escalate to the Director when "
                 "every option is vetoed or infeasible, the top two are within 2%, or a lever needs budget approval.\n"
+                "Feasibility is already checked: a hard limit no option breaches is not a reason. A paused night "
+                "delays the whole reslot; on a tie prefer the option with more progress unless a specialist gave an "
+                "evidence-backed reason (breach, veto, lock, no labor to absorb moves).\n"
                 'Reply JSON {"option_id": "...", "escalate": false, "rationale": "<= 60 words", "evidence_ids": ["..."]}.')
         fb = ChairDecision(option_id=fb_opt.option_id if fb_opt else None, escalate=False,
                            rationale="(fallback) pause reslot" if fb_opt is pause and pause else "(fallback)",

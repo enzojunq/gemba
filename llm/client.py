@@ -92,7 +92,13 @@ def _is_format_rejection(e: Exception) -> bool:
 
 
 DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_REASONING_TIMEOUT_S = 90.0  # thinking-on calls (chair, director, coach) routinely exceed 20 s
 DEFAULT_MAX_RETRIES = 1
+
+
+def reasoning_timeout() -> float:
+    t = (os.environ.get("LLM_REASONING_TIMEOUT_S") or "").strip()
+    return float(t) if t else DEFAULT_REASONING_TIMEOUT_S
 
 
 def client_options() -> dict:
@@ -183,6 +189,8 @@ class LLM:
     def _call(self, model, messages, schema, reasoning, max_tokens, temperature, meta: CallMeta) -> str:
         kwargs = dict(model=model, max_tokens=max_tokens, temperature=temperature,
                       extra_body={"chat_template_kwargs": {"enable_thinking": bool(reasoning)}})
+        if reasoning:  # per-request override; the first real-twin run lost 6 chair/director calls to 20 s timeouts
+            kwargs["timeout"] = reasoning_timeout()
         if schema is None:
             return self._account(self.client.chat.completions.create(messages=messages, **kwargs), meta)
 
