@@ -218,12 +218,13 @@ def test_safety_veto_without_breach_overruled(store):
 
 
 class AllBadTwin(StubTwin):
-    """Every what-if (REF included) breaches safety; bigger reslots breach more."""
+    """Every what-if (REF included) breaches safety; any lever (even a pause) breaches more than
+    REF, and bigger reslots breach more."""
 
     def whatif(self, state, levers, days, known_events):
         w = super().whatif(state, levers, days, known_events)
         n = sum(lv.n_moves for lv in levers if lv.kind == "reslot_tonight")
-        return w.model_copy(update={"safety_risk_max": 1.2 + n / 10000})
+        return w.model_copy(update={"safety_risk_max": 1.2 + ((n + 10) / 10000 if levers else 0)})
 
 
 def test_all_infeasible_least_bad_and_escalate(store):
@@ -235,7 +236,8 @@ def test_all_infeasible_least_bad_and_escalate(store):
     _, llm, d = run_day(store, script, [rack()], twin=AllBadTwin())
     options = {o["option_id"]: o for o in rows(store, "options")}
     assert not any(o["feasible"] for o in options.values())
-    assert d.option_id == opt(2)  # reslot 100 breaches least
+    # least-bad: the code pause option (tabled because nothing is feasible) breaches least
+    assert [lv.kind for lv in d.levers] == ["pause_reslot"]
     assert d.decided_by == "plant_director"
     assert llm.count("DirectorRuling", "plant_director") == 1
     assert any(h["role"] == "plant_director" for h in rows(store, "hires"))
@@ -245,18 +247,18 @@ def test_all_infeasible_least_bad_and_escalate(store):
 
 
 def test_quality_lock_becomes_protect_lever(store):
-    week = c.Event(event_id="kc1", kind="key_customer_week", day=DAY, args={"customer": "KEY1", "days": 5},
+    week = c.Event(event_id="kc1", kind="key_customer_week", day=DAY, args={"customer": "C001", "days": 5},
                    announced_day=DAY - 3, source="scripted")
     script = base_script({
         ("MaybeProposal", "quality"): MaybeProposal(proposal=None),
         ("QualityReply", "quality"): QualityReply(position=pos(opt(1), [ev(1)]),
-                                                  lock=c.Lock(target="customer", ids=["KEY1"], days=3,
+                                                  lock=c.Lock(target="customer", ids=["C001"], days=3,
                                                               reason="key customer week")),
     })
     _, _, d = run_day(store, script, [week])
     assert any(h["role"] == "quality" for h in rows(store, "hires"))
     prot = [lv for lv in d.levers if lv.kind == "protect"]
-    assert prot and prot[0].ids == ["KEY1"] and prot[0].days == 3 and prot[0].decision_id == d.decision_id
+    assert prot and prot[0].ids == ["C001"] and prot[0].days == 3 and prot[0].decision_id == d.decision_id
     assert any(u["kind"] == "lock" and u["role"] == "quality" for u in rows(store, "utterances"))
     assert all(any(lv["kind"] == "protect" for lv in o["levers"]) for o in rows(store, "options"))
 
@@ -318,11 +320,14 @@ def test_hire_released_after_two_quiet_days(store):
     twin, state, view = setup()
     policy.decide(DAY, view, [rack()], twin, state)
     assert "safety" in policy.present
-    for d in (DAY + 1, DAY + 2):
+    for d in (DAY + 1, DAY + 2):  # rack event (days 3) still active -> safety stays hired
         policy.decide(d, view, [rack()], twin, state)  # rack event no longer new -> quiet
+    assert "safety" in policy.present
+    for d in (DAY + 3, DAY + 4):
+        policy.decide(d, view, [rack()], twin, state)
     assert "safety" not in policy.present
     h = [r for r in rows(store, "hires") if r["role"] == "safety"]
-    assert h and h[0]["released_day"] == DAY + 2
+    assert h and h[0]["released_day"] == DAY + 4
 
 
 # --------------------------------------------------------------------------- review fixes
@@ -452,7 +457,9 @@ def test_prompts_contain_no_run_id(store):
     policy = OrgPolicy(run, load_profile("customer_first"), llm, store)
     twin, state, view = setup()
     policy.pending_inbox.append("garbled note from the floor")
-    policy.decide(DAY, view, [rack(), key_week()], twin, state)
+    esc = c.Event(event_id="de1", kind="director_escalation", day=DAY, args={"metric": "on_time_pct"},
+                  announced_day=DAY, source="consequence")
+    policy.decide(DAY, view, [rack(), key_week(), esc], twin, state)
     assert llm.count("DirectorRuling") == 1
     # next day the board shows yesterday's lock (with its decision id) and evidence rows
     st, _ = twin.apply_levers(state, [c.Protect(target="customer", ids=["C001"], days=3,
@@ -587,3 +594,136 @@ def test_live_rack_damage_standup(tmp_path):
     assert isinstance(d, c.Decision)
     assert len(s.table("evidence", "live1")) >= 1
     assert len(s.table("utterances", "live1")) >= 3
+
+
+# --------------------------------------------------------------------------- QA fixes (63 live meetings)
+
+
+class BatchTwin(StubTwin):
+    """Night-1 safety peak breaches on big batches only (150+ legs); smaller batches are fine."""
+
+    def whatif(self, state, levers, days, known_events):
+        w = super().whatif(state, levers, days, known_events)
+        if any(lv.kind == "reslot_tonight" and lv.n_moves >= 150 for lv in levers):
+            return w.model_copy(update={"safety_risk_max": 1.10})
+        return w
+
+
+class AnyMoveTwin(StubTwin):
+    """Any reslot at all breaches safety; a pause does not."""
+
+    def whatif(self, state, levers, days, known_events):
+        w = super().whatif(state, levers, days, known_events)
+        if any(lv.kind == "reslot_tonight" and lv.n_moves > 0 for lv in levers):
+            return w.model_copy(update={"safety_risk_max": 1.3})
+        return w
+
+
+def test_smaller_batch_code_option_after_breach(store):
+    script = base_script({
+        ("Proposal", "reslotting_engineer"): proposal("reslot 200", c.ReslotTonight(n_moves=200)),
+        ("MaybeProposal", "ops_manager"): MaybeProposal(proposal=None),
+        ("ChairDecision", "program_manager"): c.ChairDecision(option_id="o3", escalate=False,
+                                                              rationale="keep the reslot moving", evidence_ids=[]),
+    })
+    _, _, d = run_day(store, script, [rack()], twin=BatchTwin())
+    opts = rows(store, "options")
+    half = [o for o in opts if o["levers"] and o["levers"][0].get("n_moves") == 100]
+    assert len(half) == 1 and half[0]["feasible"] and half[0]["proposed_by"] == "analytics"
+    utt = rows(store, "utterances")
+    assert any(u["role"] == "analytics" and "200 legs breach safety_risk_max 1.10 > 1.00; trying 100 legs" in u["text"]
+               and u["text"].endswith("feasible") for u in utt)
+    assert d.option_id == half[0]["option_id"] and d.levers[0].n_moves == 100
+
+
+def test_ref_pick_maps_to_pause(store):
+    script = base_script({
+        ("MaybeProposal", "ops_manager"): MaybeProposal(proposal=None),
+        ("ChairDecision", "program_manager"): c.ChairDecision(option_id="REF", escalate=False,
+                                                              rationale="hold tonight", evidence_ids=[REF]),
+    })
+    _, _, d = run_day(store, script, [rack()])
+    assert [lv.kind for lv in d.levers] == ["pause_reslot"]
+
+
+def test_infeasible_only_tables_pause(store):
+    script = base_script({("Proposal", "reslotting_engineer"): proposal("reslot 200", c.ReslotTonight(n_moves=200))})
+    _, _, d = run_day(store, script, [rack()], twin=AnyMoveTwin())
+    pause = [o for o in rows(store, "options") if [lv["kind"] for lv in o["levers"]] == ["pause_reslot"]]
+    assert pause and pause[0]["feasible"]
+    assert [lv.kind for lv in d.levers] == ["pause_reslot"] and d.decided_by == "program_manager"
+
+
+def test_chair_escalate_without_reason_not_honoured(store):
+    script = base_script({("ChairDecision", "program_manager"): c.ChairDecision(
+        option_id=opt(1), escalate=True, rationale="let the director decide", evidence_ids=[ev(1)])})
+    _, llm, d = run_day(store, script, [rack()])
+    assert llm.count("DirectorRuling") == 0 and d.decided_by == "program_manager"
+    assert any("chair asked to escalate without a rule reason; deciding" in u["text"] for u in rows(store, "utterances"))
+
+
+def test_shift_lead_alternative_on_labor_shortage(store):
+    short = c.Event(event_id="ls1", kind="labor_shortage", day=DAY, args={"pool": "pm", "pct": 20, "days": 2},
+                    announced_day=DAY, source="scripted")
+    script = base_script({
+        ("MaybeProposal", "ops_manager"): MaybeProposal(proposal=None),
+        ("MaybeProposal", "shift_lead"): MaybeProposal(proposal=proposal(
+            "move pickers to pm", c.LaborAllocate(shift="day", pool="pm", headcount=14))),
+    })
+    _, llm, _ = run_day(store, script, [short])
+    assert llm.count("MaybeProposal", "shift_lead") == 1
+    opts = rows(store, "options")
+    assert any(o["proposed_by"] == "shift_lead" and o["levers"][0]["kind"] == "labor_allocate" for o in opts)
+
+
+def test_invalid_lever_ids_dropped_valid_kept(store):
+    script = base_script({
+        ("MaybeProposal", "ops_manager"): MaybeProposal(proposal=proposal(
+            "skip zone 3", c.ReslotTonight(n_moves=100, exclude_zones=[3]))),
+        ("MaybeProposal", "quality"): MaybeProposal(proposal=proposal(
+            "protect key customer", c.Protect(target="customer", ids=["key_customer_week"], days=3))),
+        ("QualityReply", "quality"): QualityReply(position=pos(opt(1), [ev(1)]),
+                                                  lock=c.Lock(target="customer", ids=["C001"], days=2, reason="kc")),
+    })
+    policy, _, d = run_day(store, script, [key_week()])
+    utt = rows(store, "utterances")
+    assert any(u["role"] == "quality" and u["text"] == "rejected lever protect: customer id 'key_customer_week' is "
+               "not a customer (expected C001-C200)" for u in utt)
+    opts = rows(store, "options")
+    assert not any(o["proposed_by"] == "quality" for o in opts)
+    assert any(o["proposed_by"] == "ops_manager" and o["levers"][0]["exclude_zones"] == [3] for o in opts)
+    assert [lv.ids for lv in d.levers if lv.kind == "protect"] == [["C001"]]
+    assert policy._lever_error(c.ReslotTonight(n_moves=10, exclude_zones=[10, 14]))
+    assert policy._lever_error(c.Protect(target="zone", ids=["aisle_9"], days=1))
+    assert policy._lever_error(c.ResizeSlots(skus=["S0001"], days_cover=3)) is None
+    assert policy._lever_error(c.HireTemps(count=9, start_day=DAY, days=2))
+
+
+def test_fallback_position_excluded_from_memory_and_chair(store):
+    llm = CapturingLLM(base_script({("Position", "ops_manager"): pos(opt(2), ["ev-bogus"])}))
+    policy = OrgPolicy(RUN, load_profile("customer_first"), llm, store)
+    twin, state, view = setup()
+    policy.decide(DAY, view, [rack()], twin, state)
+    assert policy.stances.get("ops_manager") == [] and policy.stances.get("reslotting_engineer")
+    assert any("Ryan (ops_manager): no position (LLM fallback)" in t or "(ops_manager): no position (LLM fallback)" in t
+               for t in llm.texts)
+
+
+def test_stance_memory_strips_numbers():
+    from org.board import StanceMemory
+    sm = StanceMemory()
+    sm.add("ops_manager", DAY, "o1", "support", "on-time 97.5% with 200 legs")
+    assert sm.get("ops_manager")[0][3] == "on-time # with # legs"
+
+
+def test_quality_stays_hired_through_key_customer_week(store):
+    week = c.Event(event_id="kc1", kind="key_customer_week", day=DAY, args={"customer": "C001", "days": 5},
+                   announced_day=DAY - 3, source="scripted")
+    policy = OrgPolicy(RUN, load_profile("customer_first"), FakeLLM(base_script()), store)
+    twin, state, view = setup()
+    for d in range(DAY, DAY + 5):
+        policy.decide(d, view, [week], twin, state)
+        assert "quality" in policy.present, d
+    policy.decide(DAY + 5, view, [week], twin, state)
+    policy.decide(DAY + 6, view, [week], twin, state)
+    assert "quality" not in policy.present

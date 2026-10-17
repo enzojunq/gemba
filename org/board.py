@@ -11,6 +11,8 @@ the standup, never into the board, so the board stays identical for every role o
 """
 from __future__ import annotations
 
+import re
+
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -165,7 +167,8 @@ class StanceMemory:
         self.by_role: dict[str, deque[tuple[int, str, str, str]]] = {}
 
     def add(self, role_id: str, day: int, option_id: str, stance: str, rationale: str) -> None:
-        line = " ".join((rationale or "").split())[:120]
+        # numbers stripped: stale figures from earlier days must not be recycled as today's facts
+        line = re.sub(r"\d+(\.\d+)?%?", "#", " ".join((rationale or "").split()))[:120]
         self.by_role.setdefault(role_id, deque(maxlen=self.maxlen)).append((day, option_id, stance, line))
 
     def get(self, role_id: str) -> list[tuple[int, str, str, str]]:

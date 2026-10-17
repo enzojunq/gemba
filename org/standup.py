@@ -27,7 +27,7 @@ runs, forks and eval; the store keeps the run-scoped ids (`{run}-m{day}`, `{run}
 `ev-{run}-{day}-{n}`) and the policy maps between them. What-if levers carry provisional ids
 `whatif:{run}:{day}:{n}`; the committed decision re-stamps them with its real id.
 
-The client is synchronous, so positions run in a `ThreadPoolExecutor(max_workers=4)`; their
+The client is synchronous, so positions run in a `ThreadPoolExecutor(MAX_WORKERS)`; their
 results are processed in sorted role order, so the outcome does not depend on thread timing.
 """
 from __future__ import annotations
@@ -75,7 +75,16 @@ TIE_FLOOR = 0.01
 larger magnitude; the floor keeps two near-zero scores from always tying on rounding noise
 (0 vs 0 still ties)."""
 EPS = 1e-9
-MAX_WORKERS = 4
+MAX_WORKERS = max(1, int(os.environ.get("GEMBA_LLM_WORKERS", "2") or 2))
+"""Parallel LLM calls per meeting (env GEMBA_LLM_WORKERS, default 2: fewer 429s when runs share the endpoint)."""
+HALF_BATCH_MIN = 50
+TEMPS_MAX_DEFAULT = 8
+CODE_PAUSE_LABEL = "pause reslot 1 day (code default)"
+REF_PICKS = {"ref", "do nothing", "do-nothing", "do_nothing", "none", "null", "nothing"}
+POOLS = set(c.Pool.__args__)
+SHIFTS = set(c.Shift.__args__)
+ALT_ORDER = ("ops_manager", "shift_lead", "replenishment", "safety", "quality", "plant_director")
+"""Who is asked for an alternative first (the first distinct alternatives fill the option cap)."""
 
 # --------------------------------------------------------------------------- reply schemas
 
@@ -108,17 +117,17 @@ class Accept(BaseModel):
 
 
 LEVER_HELP: dict[str, str] = {
-    "reslot_tonight": '{"kind":"reslot_tonight","n_moves":200,"order":"value|zone|family","include_zones":[],"exclude_zones":[]}',
-    "pause_reslot": '{"kind":"pause_reslot","days":1}',
-    "labor_allocate": '{"kind":"labor_allocate","shift":"day|swing|night","pool":"pm|forklift|pallet|replen|consolidation|loading|night_move|temp","headcount":12}',
-    "overtime": '{"kind":"overtime","shift":"day|swing|night","pool":"pm","hours":8}',
-    "hire_temps": '{"kind":"hire_temps","count":4,"start_day":<day>,"days":3}',
-    "protect": '{"kind":"protect","target":"zone|skus|customer","ids":["..."],"days":3}',
-    "resize_slots": '{"kind":"resize_slots","skus":["S0001"],"days_cover":3.0}',
+    "reslot_tonight": '{"kind":"reslot_tonight","n_moves":<n legs>,"order":"value|zone|family","include_zones":[<zone 1-6>],"exclude_zones":[<zone 1-6>]}',
+    "pause_reslot": '{"kind":"pause_reslot","days":<days>}',
+    "labor_allocate": '{"kind":"labor_allocate","shift":"day|swing|night","pool":"pm|forklift|pallet|replen|consolidation|loading|night_move|temp","headcount":<headcount, absolute people on that shift/pool (not a delta)>}',
+    "overtime": '{"kind":"overtime","shift":"day|swing|night","pool":"pm|forklift|...","hours":<hours>}',
+    "hire_temps": '{"kind":"hire_temps","count":<n, max 8>,"start_day":<day>,"days":<days>}',
+    "protect": '{"kind":"protect","target":"zone|skus|customer","ids":["<zone 1-6 | sku_id e.g. S0412 | customer_id e.g. C017>"],"days":<days 1-3>}',
+    "resize_slots": '{"kind":"resize_slots","skus":["<sku_id e.g. S0412>"],"days_cover":<days 1-10>}',
     "wave_priority": '{"kind":"wave_priority","mode":"rush_first|by_cutoff|by_zone"}',
-    "close_aisle": '{"kind":"close_aisle","aisle":5,"days":2}',
-    "reopen_aisle": '{"kind":"reopen_aisle","aisle":5}',
-    "staging_clearance": '{"kind":"staging_clearance","n_movers":2}',
+    "close_aisle": '{"kind":"close_aisle","aisle":<aisle 1-28>,"days":<days>}',
+    "reopen_aisle": '{"kind":"reopen_aisle","aisle":<aisle 1-28>}',
+    "staging_clearance": '{"kind":"staging_clearance","n_movers":<n>}',
 }
 
 
@@ -145,6 +154,10 @@ def spec_hash(levers: list[c.Lever], day: int) -> str:
 
 def _event_end(e: Event) -> int:
     return e.day + max(1, int(e.args.get("days", 1) or 1)) - 1
+
+
+def _is_fallback(p: Position) -> bool:
+    return (p.rationale or "").lstrip().startswith("(fallback)")
 
 
 def _lever_key(lv: c.Lever) -> str:
@@ -536,11 +549,13 @@ class OrgPolicy:
         unparsed, self.pending_inbox = [str(t) for t in self.pending_inbox], []
         inbox = parsed_inbox + unparsed
         rejected, self.pending_rejections = list(self.pending_rejections), []
+        self._kinds = set(kinds)
         self._tags = set(kinds) | set(violations) | {getattr(f, "kind", str(f)) for f in drift_flags}
 
         # ---- 2. TRIAGE (code): hiring, then quiet-day check
         kpis_y = yesterday.model_dump(exclude={"mispick_rate_by_customer"}) if yesterday else {}
-        fired = hire_triggers(self.roles, kinds, kpis_y)
+        active_kinds = sorted(set(kinds) | {e.kind for e in events if e.day <= day <= _event_end(e)})
+        fired = hire_triggers(self.roles, active_kinds, kpis_y)
         hires_today = self._code_hiring(day, fired)
         quiet = not (new_events or consequences or drift or inbox or violations or rejected)
         self._view, self._events, self._yday, self._pred = view, events, yesterday, predicted
@@ -577,6 +592,8 @@ class OrgPolicy:
         m.ref_id = self._write_evidence("do nothing (REF)", [], m.ref, None)
         for o in m.active():
             self._run_evidence(o, twin, state, events)
+        self._smaller_batch(twin, state, events)
+        self._ensure_pause(twin, state, events)
         self._refresh_board()
 
         # ---- 5. POSITIONS (parallel)
@@ -807,7 +824,10 @@ class OrgPolicy:
                       levers=[ReslotTonight(n_moves=self.standing_budget, order=self.standing_order)])
         self._add_option(eng, self._ask(eng, Proposal, task, fb))
 
-        alts = [r for r in ("ops_manager", "safety", "quality") if r in self.present and r in self.roles]
+        skip = {self.engineer_id, self.chair_id, "analytics"}
+        cands = [r for r in self.present if r in self.roles and r not in skip
+                 and not self.roles[r].runs_simulator and self.roles[r].levers_can_propose]
+        alts = sorted(cands, key=lambda r: (ALT_ORDER.index(r) if r in ALT_ORDER else len(ALT_ORDER), r))
         first = self._m.active()[0] if self._m.active() else None
         tabled = (f"The engineer tabled `{self._disp_opt(first.option_id)}` {first.label}: "
                   + ", ".join(lever_str(lv) for lv in first.levers)) if first else "No option tabled yet."
@@ -820,12 +840,15 @@ class OrgPolicy:
             return self._ask(rid, MaybeProposal, t, MaybeProposal(proposal=None))
 
         for rid, res in zip(alts, self._parallel(ask_alt, alts)):
+            if res.proposal is None:
+                continue
             if len(self._m.active()) >= MAX_OPTIONS:
-                break
-            if res.proposal is not None:
-                self._add_option(rid, res.proposal)
+                self._utter(rid, "question", f"alternative '{res.proposal.option_label}' not tabled: "
+                            f"cap {MAX_OPTIONS} options")
+                continue
+            self._add_option(rid, res.proposal)
         if len(self._m.active()) < 2:
-            self._add_option(self.chair_id, Proposal(option_label="pause reslot 1 day (code default)",
+            self._add_option(self.chair_id, Proposal(option_label=CODE_PAUSE_LABEL,
                                                      levers=[PauseReslot(days=1)],
                                                      rationale="Code-generated alternative so there is a choice."),
                              check_authority=False)
@@ -842,6 +865,7 @@ class OrgPolicy:
             for rj in rejected:
                 log.info("rejected lever %s from %s: %s", rj.lever.kind, role_id, rj.reason)
                 self._utter(role_id, "question", f"rejected lever {rj.lever.kind}: {rj.reason}")
+            levers = self._validate_levers(role_id, levers)
         if not levers:
             if p.levers:  # everything it proposed was outside its authority
                 self._utter(role_id, "question", f"option '{p.option_label}' dropped: no authorised levers")
@@ -852,8 +876,8 @@ class OrgPolicy:
         key = spec_hash(levers, self._day)
         dup = next((o for o in self._m.active() if spec_hash(o.levers, self._day) == key), None)
         if dup is not None:
-            self._utter(role_id, "question", f"option '{p.option_label}' is the same as {dup.option_id}; not added",
-                        option_id=dup.option_id)
+            self._utter(role_id, "question", f"option '{p.option_label}' is the same as "
+                        f"{self._disp_opt(dup.option_id)}; not added", option_id=dup.option_id)
             return None
         o = Option(option_id=self._new_option_id(), label=p.option_label[:80], levers=levers,
                    proposed_by=role_id, rationale=p.rationale)
@@ -861,6 +885,154 @@ class OrgPolicy:
         self.store.write_option(self.run_id, self._m.meeting_id, o.option_id, o.levers, role_id)
         self._utter(role_id, "proposal", f"{o.label}: {p.rationale}".strip()[:600], option_id=o.option_id)
         return o
+
+    # ================================================================== lever validation
+    def _lever_error(self, lv: c.Lever) -> str | None:
+        """Why the floor would reject this lever's ids/values (None when valid)."""
+        k = lv.kind
+        if k == "reslot_tonight":
+            bad = [z for z in list(lv.include_zones) + list(lv.exclude_zones) if not (1 <= int(z) <= 6)]
+            if bad:
+                return f"zones {bad} are not zones (expected 1-6)"
+        elif k == "protect":
+            if lv.target == "zone":
+                bad = [i for i in lv.ids if not (str(i).isdigit() and 1 <= int(i) <= 6)]
+                what = "zone id {!r} is not a zone (expected 1-6)"
+            elif lv.target == "customer":
+                bad = [i for i in lv.ids if not re.fullmatch(r"C\d{3}", str(i))]
+                what = "customer id {!r} is not a customer (expected C001-C200)"
+            else:
+                bad = [i for i in lv.ids if not re.fullmatch(r"S\d{4}", str(i))]
+                what = "sku id {!r} is not a sku (expected S0001-S9999)"
+            if not lv.ids:
+                return f"no {lv.target} ids"
+            if bad:
+                return what.format(bad[0])
+        elif k in ("close_aisle", "reopen_aisle"):
+            if not (1 <= int(lv.aisle) <= 28):
+                return f"aisle {lv.aisle} is not an aisle (expected 1-28)"
+        elif k in ("labor_allocate", "overtime"):
+            if lv.pool not in POOLS:
+                return f"pool {lv.pool!r} is not a pool"
+            if lv.shift not in SHIFTS:
+                return f"shift {lv.shift!r} is not a shift"
+            if k == "labor_allocate" and not (0 <= lv.headcount <= 40):
+                return f"headcount {lv.headcount} out of range (absolute people, 0-40)"
+        elif k == "resize_slots":
+            bad = [i for i in lv.skus if not re.fullmatch(r"S\d{4}", str(i))]
+            if not lv.skus:
+                return "no skus"
+            if bad:
+                return f"sku id {bad[0]!r} is not a sku (expected S0001-S9999)"
+            if not (1 <= lv.days_cover <= 10):
+                return f"days_cover {lv.days_cover:g} out of range (1-10)"
+        elif k == "hire_temps":
+            cap = int(self.profile.budgets.get("temps_max", TEMPS_MAX_DEFAULT))
+            if lv.count > cap:
+                return f"count {lv.count} over the temps budget ({cap})"
+        return None
+
+    def _validate_levers(self, role_id: str, levers: list[c.Lever], option_id: str | None = None) -> list[c.Lever]:
+        """Drop levers whose ids/values the floor would reject, with an utterance each."""
+        kept = []
+        for lv in levers:
+            err = self._lever_error(lv)
+            if err is None:
+                kept.append(lv)
+            else:
+                self._utter(role_id, "question", f"rejected lever {lv.kind}: {err}"[:600], option_id=option_id)
+        return kept
+
+    # ================================================================== code options after evidence
+    def _make_room(self, keep: tuple = ()) -> bool:
+        """At the option cap, replace the lowest-scored non-engineer option. False if nothing can go."""
+        m = self._m
+        if len(m.active()) < MAX_OPTIONS:
+            return True
+        victims = [o for o in m.active() if o.proposed_by != self.engineer_id and o not in keep]
+        if not victims:
+            return False
+        victim = min(victims, key=lambda o: (o.total, o.option_id))
+        victim.replaced = True
+        self._utter(self.chair_id, "question", f"{self._disp_opt(victim.option_id)} replaced by a code option "
+                    f"(cap {MAX_OPTIONS} options)", option_id=victim.option_id)
+        return True
+
+    def _code_option(self, role_id: str, label: str, levers: list[c.Lever], rationale: str,
+                     twin: Any, state: Any, events: list[Event], keep: tuple = ()) -> Option | None:
+        if not self._make_room(keep):
+            return None
+        o = self._add_option(role_id, Proposal(option_label=label, levers=levers, rationale=rationale),
+                             check_authority=False)
+        if o is not None:
+            self._run_evidence(o, twin, state, events)
+        return o
+
+    @staticmethod
+    def _moves(o: Option) -> int:
+        return sum(lv.n_moves for lv in o.levers if lv.kind == "reslot_tonight")
+
+    def _smaller_batch(self, twin: Any, state: Any, events: list[Event]) -> None:
+        """Every reslot option breaches safety_risk_max / pm_peak_zone_load and nothing feasible
+        moves stock: table the engineer's option with n_moves halved (min 50), once more if needed."""
+        m = self._m
+        act = m.active()
+        reslots = [o for o in act if any(lv.kind == "reslot_tonight" for lv in o.levers)]
+        if not reslots or any(o.feasible and self._moves(o) > 0 for o in act):
+            return
+        load = ("safety_risk_max", "pm_peak_zone_load")
+        if not all(o.feas and any(b in o.feas.breaches for b in load) for o in reslots):
+            return
+        base = next((o for o in reslots if o.proposed_by == self.engineer_id), reslots[0])
+        rs = next(lv for lv in base.levers if lv.kind == "reslot_tonight")
+        who = "analytics" if "analytics" in self.roles else self.chair_id
+        prev, cur, n = base, None, rs.n_moves
+        for _ in range(2):
+            n2 = max(HALF_BATCH_MIN, n // 2)
+            if n2 >= n:
+                break
+            levers = [lv.model_copy(update={"n_moves": n2}) if lv.kind == "reslot_tonight" else lv
+                      for lv in base.levers]
+            key = spec_hash(levers, m.day)
+            dup = next((o for o in m.active() if spec_hash(o.levers, m.day) == key), None)
+            if dup is not None:  # someone already tabled that batch: judge it, do not re-run
+                o = dup
+            else:
+                if cur is not None:
+                    cur.replaced = True
+                o = self._code_option(who, f"reslot {n2} legs (code: smaller batch after breach)", levers,
+                                      f"{n} legs breach a hard limit; same plan with {n2} legs.", twin, state,
+                                      events, keep=(base,))
+                if o is None:
+                    break
+                cur = o
+            name = next(b for b in load if b in prev.feas.breaches)
+            limit = self.profile.hard_limits.get(name, 1.0)
+            self._utter(who, "question", f"{n} legs breach {name} {getattr(prev.whatif, name):.2f} > {limit:.2f}; "
+                        f"trying {n2} legs: {getattr(o.whatif, name):.2f}, "
+                        + ("feasible" if o.feasible else "still infeasible"), [o.evidence_id], o.option_id)
+            if o.feasible or not (o.feas and any(b in o.feas.breaches for b in load)):
+                return
+            prev, n = o, n2
+
+    def _ensure_pause(self, twin: Any, state: Any, events: list[Event]) -> None:
+        """No tabled option is feasible: always table the code pause option."""
+        if any(o.feasible for o in self._m.active()) or self._pause_option() is not None:
+            return
+        self._code_option(self.chair_id, CODE_PAUSE_LABEL, [PauseReslot(days=1)],
+                          "Code-generated: no tabled option is feasible.", twin, state, events)
+
+    def _pause_option(self) -> Option | None:
+        return next((o for o in self._m.active() if o.levers and all(lv.kind == "pause_reslot" for lv in o.levers)),
+                    None)
+
+    def _map_ref_pick(self, oid: str | None) -> str | None:
+        """A pick of REF / "do nothing" / "none" means the pause option (if tabled)."""
+        raw = (oid or "").strip().strip("`").lower()
+        if raw in REF_PICKS or (self._m.ref_id and self._store_ev(raw) == self._m.ref_id):
+            p = self._pause_option()
+            return p.option_id if p else oid
+        return oid
 
     # ================================================================== positions
     def _options_text(self, with_scores: bool = False) -> str:
@@ -876,7 +1048,8 @@ class OrgPolicy:
                          if ref_k is not None else "")
                 s += (f" | evidence `{self._disp_ev(o.evidence_id)}`: on_time {k.on_time_pct:.1f}%, mispick {k.mispick_rate:.2f}%, "
                       f"lph {k.lph:.1f}, progress {k.reslot_progress_pct:.1f}%{dprog}, cost ${k.labor_cost_usd:,.0f}, "
-                      f"exp near-misses {o.whatif.expected_near_misses:.2f}, safety_risk {o.whatif.safety_risk_max:.2f}")
+                      f"exp near-misses {o.whatif.expected_near_misses:.2f}, safety_risk {o.whatif.safety_risk_max:.2f}, "
+                      f"pm_peak_zone_load {o.whatif.pm_peak_zone_load:.2f}")
             if o.feasible:
                 s += " | feasible"
             else:  # value vs limit, not the breach amount (Luke once read "{'safety_risk_max': 0.1}" as the limit)
@@ -962,7 +1135,8 @@ class OrgPolicy:
         if p.stance == "amend" and p.amendment:
             text += " | amendment: " + ", ".join(lever_str(lv) for lv in p.amendment)
         self._utter(role_id, "position", text[:800], p.evidence_ids, p.option_id)
-        self.stances.add(role_id, day, self._disp_opt(p.option_id), p.stance, p.rationale)
+        if not _is_fallback(p):  # an LLM fallback is not a stance worth remembering
+            self.stances.add(role_id, day, self._disp_opt(p.option_id), p.stance, p.rationale)
 
     def _handle_veto(self, role_id: str, v: Veto) -> None:
         v = v.model_copy(update={"option_id": self._store_opt(v.option_id) or "",
@@ -1002,6 +1176,10 @@ class OrgPolicy:
             pr = Protect(target=lk.target, ids=[str(i) for i in lk.ids], days=days)
         except ValidationError as e:
             self._utter(role_id, "lock", f"lock not applied: invalid ({str(e)[:200]})")
+            return
+        err = self._lever_error(pr)
+        if err:
+            self._utter(role_id, "lock", f"lock not applied: {err}"[:600])
             return
         self._m.lock_levers.append(pr)
         changed = []
@@ -1061,6 +1239,7 @@ class OrgPolicy:
             kept, rejected = authority.filter_proposal(self.roles[role_id], list(p.amendment))
             for rj in rejected:
                 self._utter(role_id, "question", f"rejected lever {rj.lever.kind}: {rj.reason}", option_id=base.option_id)
+            kept = self._validate_levers(role_id, kept, base.option_id)
             if not kept:
                 continue
             levers = self._merge(base.levers, kept)
@@ -1105,7 +1284,8 @@ class OrgPolicy:
 
     # ================================================================== decide
     def _positions_text(self) -> str:
-        rows = [f"- {self.roles[r].name} ({r}): {p.stance} {self._disp_opt(p.option_id)} - {p.rationale[:160]}"
+        rows = [f"- {self.roles[r].name} ({r}): no position (LLM fallback)" if _is_fallback(p) else
+                f"- {self.roles[r].name} ({r}): {p.stance} {self._disp_opt(p.option_id)} - {p.rationale[:160]}"
                 for r, p in sorted(self._m.positions.items())]
         return "\n".join(rows) or "- (none)"
 
@@ -1116,8 +1296,8 @@ class OrgPolicy:
         eligible = [o for o in non_vetoed if o.feasible]
         ranked = sorted(eligible, key=lambda o: (-o.total, o.option_id))
         top = ranked[0] if ranked else None
-        pause = next((o for o in act if o.levers and all(lv.kind == "pause_reslot" for lv in o.levers)), None)
-        fb_opt = pause or top or (act[0] if act else None)
+        pause = self._pause_option()
+        fb_opt = top or pause or (act[0] if act else None)
         task = (f"## Options (code-computed scores under profile {self.profile.id}; {self._h(day)}-day what-ifs)\n"
                 f"{self._options_text(with_scores=True)}\n\n## Positions\n{self._positions_text()}\n\n"
                 "Pick one option. Rules: a vetoed or infeasible option cannot be chosen; picking a feasible option "
@@ -1128,16 +1308,15 @@ class OrgPolicy:
                 "evidence-backed reason (breach, veto, lock, no labor to absorb moves).\n"
                 'Reply JSON {"option_id": "...", "escalate": false, "rationale": "<= 60 words", "evidence_ids": ["..."]}.')
         fb = ChairDecision(option_id=fb_opt.option_id if fb_opt else None, escalate=False,
-                           rationale="(fallback) pause reslot" if fb_opt is pause and pause else "(fallback)",
+                           rationale="(fallback) pause reslot" if pause is not None and fb_opt is pause
+                           else "(fallback) top feasible score",
                            evidence_ids=[fb_opt.evidence_id] if fb_opt and fb_opt.evidence_id else [])
         dec = self._ask(self.chair_id, ChairDecision, task, fb, tier="ultra", reasoning=True, max_tokens=1500)
-        dec = dec.model_copy(update={"option_id": self._store_opt(dec.option_id),
+        dec = dec.model_copy(update={"option_id": self._store_opt(self._map_ref_pick(dec.option_id)),
                                      "evidence_ids": [self._store_ev(e) for e in dec.evidence_ids]})
         rationale = (dec.rationale or "").strip()
         reasons: list[str] = []
         deviates = False
-        if dec.escalate:
-            reasons.append("chair escalates")
         if not non_vetoed:
             reasons.append("every option vetoed")
             chosen = act[least_bad([o.feas for o in act])]
@@ -1168,6 +1347,12 @@ class OrgPolicy:
         plan = authority.commit_plan(chosen.levers, self.roles, self.present, self._overtime_remaining(day))
         if plan.escalate:
             reasons.append("a lever needs the director")
+        if dec.escalate:  # honoured only with a code-detected reason
+            if reasons or "director_escalation" in getattr(self, "_kinds", set()):
+                reasons.append("chair escalates")
+            else:
+                self._utter(self.chair_id, "question", "chair asked to escalate without a rule reason; deciding",
+                            option_id=chosen.option_id)
         if not rationale:
             rationale = f"Top score under {self.profile.id}: {chosen.option_id}."
         chair_ev = [e for e in dec.evidence_ids if e in self.known_evidence]
@@ -1191,7 +1376,7 @@ class OrgPolicy:
         fb = DirectorRuling(option_id=chosen.option_id, set_profile=None, override_lock=None,
                             rationale="(fallback) the chair's choice stands")
         ruling = self._ask(dir_id, DirectorRuling, task, fb, tier="ultra", reasoning=True, max_tokens=1500)
-        ruling = ruling.model_copy(update={"option_id": self._store_opt(ruling.option_id)})
+        ruling = ruling.model_copy(update={"option_id": self._store_opt(self._map_ref_pick(ruling.option_id))})
         pick = m.get(ruling.option_id) if ruling.option_id else None
         if ruling.option_id and pick is None:
             self._utter(dir_id, "question", f"ruling names unknown option {ruling.option_id}; chair's choice stands")
