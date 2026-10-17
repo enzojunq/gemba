@@ -235,18 +235,24 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 600; lett
 .timeline-body svg { display: block; width: 100%; height: 100%; }
 
 /* ---------------------------------------------------------------- meeting room */
-.room-table { position: relative; flex: none; height: 33%; min-height: 168px; }
+.room-table { position: relative; flex: none; height: 150px; }
 @media (max-height: 900px) { .opt-raw, .decision-l { display: none; } .narr { font-size: 13px; } }
 .room-table svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.mtg-head { flex: none; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 7px 14px 5px; font-size: 13.5px; line-height: 1.35; border-bottom: 1px solid var(--line); }
+.mtg-kind { font-family: var(--font-display); font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text); white-space: nowrap; }
+.mtg-agenda { color: var(--text-2); }
+.seat-rowlabel { font-size: 10.5px; fill: var(--text-3); text-transform: uppercase; letter-spacing: 0.1em; text-anchor: end; font-weight: 600; }
 .seat { cursor: default; transition: opacity 0.4s var(--ease); }
-.seat.is-away { opacity: 0.28; }
+.seat.is-away { opacity: 0.45; }
+.seat.is-away .seat-ring { fill: transparent; stroke-dasharray: 3 3; }
+.seat.is-away .seat-ini { fill: var(--text-3); }
 .seat .seat-ring { fill: var(--surface-2); stroke: var(--line-2); stroke-width: 1.5; transition: stroke 0.3s, stroke-width 0.3s; }
 .seat.is-speaking .seat-ring { stroke: var(--amber); stroke-width: 3; }
 .seat.is-speaking .seat-glow { opacity: 1; }
 .seat-glow { fill: none; stroke: var(--amber); stroke-width: 10; opacity: 0; filter: blur(6px); transition: opacity 0.3s; }
 .seat-ini { font-family: var(--font-display); font-weight: 700; font-size: 15px; fill: var(--text); text-anchor: middle; dominant-baseline: central; }
 .seat-name { font-size: 11.5px; fill: var(--text); text-anchor: middle; font-weight: 600; }
-.seat-title { font-size: 10px; fill: var(--text-3); text-anchor: middle; text-transform: uppercase; letter-spacing: 0.06em; }
+.seat-title { font-size: 9.5px; fill: var(--text-3); text-anchor: middle; text-transform: uppercase; letter-spacing: 0.04em; }
 .seat-badge { fill: var(--teal); }
 .seat-badge-core { fill: var(--amber); }
 .seat-veto { opacity: 0; transition: opacity 0.2s; }
@@ -254,9 +260,6 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 600; lett
 .seat-lock { opacity: 0; transition: opacity 0.2s; }
 .seat.is-lock .seat-lock { opacity: 1; animation: stamp 0.35s var(--ease); }
 @keyframes stamp { from { transform: scale(1.8) rotate(-18deg); opacity: 0; } to { transform: scale(1) rotate(-12deg); opacity: 1; } }
-.table-top { fill: var(--surface-2); stroke: var(--line-2); stroke-width: 1.5; }
-.table-label { font-family: var(--font-display); font-size: 12px; fill: var(--text-3); text-anchor: middle; letter-spacing: 0.06em; text-transform: uppercase; }
-.table-agenda { font-size: 11px; fill: var(--text-2); text-anchor: middle; }
 
 .bubble-row { flex: none; min-height: 54px; padding: 8px 12px 4px; position: relative; }
 .bubble-live {
@@ -319,9 +322,9 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 600; lett
 .decision-t { font-family: var(--font-display); font-weight: 700; font-size: 19px; letter-spacing: -0.01em; line-height: 1.2; }
 .decision-l { font-family: var(--font-data); font-size: 11.5px; opacity: 0.75; margin-top: 3px; }
 .decision-r { font-size: 13px; opacity: 0.9; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.quiet { flex: 1; display: grid; place-items: center; text-align: center; padding: 20px; color: var(--text-2); }
+.quiet { flex: 1; display: grid; place-items: center; text-align: center; padding: 8px 16px; color: var(--text-2); }
 .quiet-k { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-3); font-weight: 600; margin-bottom: 6px; }
-.quiet b { display: block; font-family: var(--font-display); font-size: 22px; color: var(--text); margin-bottom: 4px; letter-spacing: -0.01em; }
+.quiet b { display: block; font-family: var(--font-display); font-size: 20px; color: var(--text); margin-bottom: 2px; letter-spacing: -0.01em; }
 .quiet small { font-size: 14px; }
 .utt-quiet { padding: 0 12px 10px; max-width: 60ch; margin: 0 auto; }
 .seat.is-muted { opacity: 0.55; }

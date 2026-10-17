@@ -33,6 +33,15 @@ HOUR_ORDER = list(range(6, 24)) + list(range(0, 6))
 app = FastAPI(title="Gemba console")
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
+
+@app.middleware("http")
+async def _no_stale_static(request, call_next):
+    """ES modules and CSS are revalidated on every load so edits show up without a hard refresh."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/static") or request.url.path == "/":
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
 _store: RunStore | None = None
 
 

@@ -2,11 +2,11 @@
 
 const ROSTER = [
   // name, title, kind (core | oncall | director), seat angle (deg, 0 = top, clockwise)
-  { name: "Megan", title: "program manager", kind: "core", chair: true },
-  { name: "Ryan", title: "ops manager", kind: "core" },
+  { name: "Megan", title: "chair · program", kind: "core", chair: true },
+  { name: "Ryan", title: "operations", kind: "core" },
   { name: "Luke", title: "reslot engineer", kind: "core" },
   { name: "Paige", title: "analytics", kind: "core" },
-  { name: "Dana", title: "plant director", kind: "director" },
+  { name: "Dana", title: "director", kind: "director" },
   { name: "Sam", title: "safety", kind: "oncall" },
   { name: "Ellen", title: "quality", kind: "oncall" },
   { name: "Marcus", title: "shift lead", kind: "oncall" },
@@ -15,11 +15,11 @@ const ROSTER = [
 // seat layout: two tidy rows. Row 1 = chair centred with the always-attending roles beside her
 // (Dana at the end, lit only on escalations); row 2 = on-call roles. Normalized x; row index.
 const SEATS = {
-  Ryan: [0.16, 0], Luke: [0.33, 0], Megan: [0.5, 0], Paige: [0.67, 0], Dana: [0.84, 0],
-  Sam: [0.3, 1], Ellen: [0.44, 1], Marcus: [0.58, 1], Tom: [0.72, 1],
+  Ryan: [0.12, 0], Luke: [0.31, 0], Megan: [0.5, 0], Paige: [0.69, 0], Dana: [0.88, 0],
+  Sam: [0.27, 1], Ellen: [0.42, 1], Marcus: [0.58, 1], Tom: [0.75, 1],
 };
 // seat centre y in px for a seat area of height H (two rows, name + title under each ring)
-const seatY = (row, H) => (row === 0 ? 22 : Math.max(86, H - 44));
+const seatY = (row, H) => (row === 0 ? 22 : Math.max(84, H - 46));
 const KIND_ICON = { veto: "#i-veto", lock: "#i-lock", decision: "#i-check", proposal: "#i-bolt" };
 
 export class Room {
@@ -96,7 +96,7 @@ export class Room {
       const g = this.seatEls[name].querySelector(".seat-pos");
       g.setAttribute("transform", `translate(${(nx * r.width).toFixed(1)},${seatY(row, r.height).toFixed(1)})`);
     }
-    this.oncallLabel.setAttribute("x", (0.3 * r.width - 40).toFixed(1));
+    this.oncallLabel.setAttribute("x", (0.27 * r.width - 40).toFixed(1));
     this.oncallLabel.setAttribute("y", (seatY(1, r.height) + 4).toFixed(1));
   }
 
@@ -140,7 +140,7 @@ export class Room {
     this.setHead("Quiet day", "standing plan continues, no agenda");
     const why = quietWhy(bundle);
     const note = (m && m.utterances && m.utterances.length ? m.utterances[0].text : null) || (decision && decision.rationale) || "No agenda. The plan holds.";
-    this.transcript.innerHTML = `<div class="quiet"><div><span class="quiet-k">Quiet day · standing plan continues</span><b>Day ${day}</b><small>${esc(why)}</small></div></div>`;
+    this.transcript.innerHTML = `<div class="quiet"><div><b>Day ${day} is quiet</b><small>${esc(why)}</small></div></div>`;
     // the chair's one line, as a single bubble from her avatar (ring lit, no floating bubble over the table)
     this.seatEls.Megan.classList.add("is-speaking");
     const row = document.createElement("div");

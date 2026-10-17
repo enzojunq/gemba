@@ -269,12 +269,6 @@ export class Floor {
         roundRect(ctx, x + 2, zy, wd - 4, zh, 3); ctx.fill(); ctx.restore();
       }
       if (load <= 0.02 && !night) hatch(ctx, x + 4, zy + 2, wd - 8, zh - 4, pal.muted);
-      ctx.fillStyle = pal.ink;
-      ctx.font = "600 9.5px JetBrains Mono, monospace"; ctx.textAlign = "left";
-      ctx.fillText(`Z${zi + 1}`, x + 7, zy + 11);
-      ctx.textAlign = "right";
-      ctx.fillStyle = load > 1 ? pal.hot : pal.ink;
-      ctx.fillText(load.toFixed(2), x + wd - 7, zy + 11);
       // pickers
       const nz = Math.round((pmBusy / Math.max(1, N_ZONES)) * (0.6 + load));
       const seeds = this.agents.pm[zi];
@@ -298,6 +292,28 @@ export class Floor {
     ctx.setLineDash([3, 4]); ctx.lineDashOffset = -(now / 40) % 7;
     ctx.beginPath(); ctx.moveTo(convX, convTop); ctx.lineTo(convX, convBot - 2); ctx.stroke();
     ctx.setLineDash([]);
+    // zone labels, drawn after the conveyor so nothing covers them: "Z6" left, load % right.
+    // Measured against the cell; the zone id is dropped first, then the whole label, when too narrow.
+    ctx.font = "700 9.5px JetBrains Mono, monospace";
+    const wPct = ctx.measureText("100%").width, wId = ctx.measureText("Z6").width;
+    const inner = wd - 12;
+    const mode = inner >= wId + wPct + 10 ? "both" : inner >= wPct + 4 ? "pct" : "none";
+    if (mode !== "none") {
+      for (let z = 0; z < N_ZONES; z++) {
+        const zi = N_ZONES - 1 - z;
+        const zy = pm.y + 5 + z * zh;
+        const load = this.arr("pm_zones", zi, now);
+        const ty = zy + Math.min(12, zh / 2 + 3.5);
+        ctx.lineWidth = 3; ctx.strokeStyle = pal.floor; ctx.lineJoin = "round";
+        if (mode === "both") {
+          ctx.textAlign = "left"; ctx.strokeText(`Z${zi + 1}`, x + 6, ty);
+          ctx.fillStyle = pal.ink; ctx.fillText(`Z${zi + 1}`, x + 6, ty);
+        }
+        const pct = `${Math.round(load * 100)}%`;
+        ctx.textAlign = "right"; ctx.strokeText(pct, x + wd - 6, ty);
+        ctx.fillStyle = load > 1 ? pal.hot : pal.ink; ctx.fillText(pct, x + wd - 6, ty);
+      }
+    }
     // totes riding down
     const queue = (pools.consolidation && pools.consolidation.queue) || 0;
     const nT = night ? 0 : Math.min(14, 3 + Math.round(queue / 20));
@@ -511,13 +527,25 @@ export class Floor {
     ctx.textAlign = "left";
     ctx.fillStyle = cur.phase === "night" ? pal.move : pal.muted;
     ctx.font = "700 11px Schibsted Grotesk, system-ui";
-    ctx.fillText(phase + " (busy / on shift →)", 12, 15);
     const pools = cur.pools || {};
-    const parts = [];
-    const add = (k, lbl) => { const p = pools[k]; if (p && p.available) parts.push(`${lbl} ${p.busy}/${p.available}`); };
-    add("pm", "Pick Module pickers"); add("forklift", "forklift pickers"); add("consolidation", "consolidator"); add("loading", "loaders"); add("night_move", "movers"); add("temp", "temps");
+    const build = (names) => {
+      const parts = [];
+      for (const [k, lbl] of names) { const p = pools[k]; if (p && p.available) parts.push(`${lbl} ${p.busy}/${p.available}`); }
+      return parts.join("  ·  ");
+    };
+    const long = build([["pm", "Pick Module pickers"], ["forklift", "forklift pickers"], ["consolidation", "consolidator"], ["loading", "loaders"], ["night_move", "movers"], ["temp", "temps"]]);
+    const short = build([["pm", "PM pickers"], ["forklift", "forklifts"], ["consolidation", "consol."], ["loading", "loaders"], ["night_move", "movers"], ["temp", "temps"]]);
+    // right-hand pool counts must never run into the phase label: shorten, then drop the hint
+    ctx.font = "500 11px JetBrains Mono, monospace";
+    const poolsW = ctx.measureText(long).width, shortW = ctx.measureText(short).width;
+    ctx.font = "700 11px Schibsted Grotesk, system-ui";
+    const hint = " (busy / on shift →)";
+    const phaseW = ctx.measureText(phase + hint).width;
+    let poolsTxt = long, phaseTxt = phase + hint;
+    if (phaseW + poolsW + 40 > w) { poolsTxt = short; if (phaseW + shortW + 40 > w) phaseTxt = phase; }
+    ctx.fillText(phaseTxt, 12, 15);
     ctx.textAlign = "right"; ctx.fillStyle = pal.muted; ctx.font = "500 11px JetBrains Mono, monospace";
-    ctx.fillText(parts.join("  ·  "), w - 12, 15);
+    ctx.fillText(poolsTxt, w - 12, 15);
   }
 }
 

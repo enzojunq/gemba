@@ -109,7 +109,7 @@ export class Timeline {
         svg.appendChild(tl);
       }
       const lab = el("text", { class: "tl-lane", x: 8, y: y0 + 10 }); lab.textContent = sp.label; svg.appendChild(lab);
-      if (!this.compact) { const u = el("text", { class: "tl-unit", x: 8, y: y0 + laneH - 8 }); u.textContent = sp.unit; svg.appendChild(u); }
+      if (!this.compact && laneH >= 30) { const u = el("text", { class: "tl-unit", x: 8, y: y0 + laneH - 8 }); u.textContent = sp.unit; svg.appendChild(u); }
       const val = el("text", { class: "tl-val", x: left - 8, y: y0 + 11, "data-val": sp.k, style: this.compact ? "display:none" : "" }); svg.appendChild(val);
       // failed checks tick under the lane
       for (const d of run.days) {
