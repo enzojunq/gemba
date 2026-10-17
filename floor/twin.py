@@ -61,8 +61,8 @@ class Twin:
             labor.setdefault(s, {p: 0 for p in POOLS})
             for p in POOLS:
                 labor[s].setdefault(p, 0)
-        for shift, pools in (scenario.overrides.get("headcounts") or {}).items():
-            for p, n_p in pools.items():
+        for shift, pools in (scenario.overrides.get("headcounts") or {}).items():  # partial, merged over the roster
+            for p, n_p in (pools or {}).items():
                 if shift in labor and p in labor[shift]:
                     labor[shift][p] = int(n_p)
         st = FloorState(seed=scenario.seed, day=scenario.days[0], scenario_id=scenario.id,
@@ -70,6 +70,8 @@ class Twin:
                         inventory=inp.current_cap.astype(float).copy(), labor=labor,
                         dip_day=np.zeros(n, dtype=np.int32), dip_mult=np.ones(n, dtype=float), key_customer=(inp.key_customers[0] if inp.key_customers else ""))
         st.loc_occupant = {int(l): i for i, l in enumerate(st.sku_loc) if l >= 0}
+        budget = (scenario.overrides.get("budgets") or {}).get("legs_per_night")
+        st.legs_per_night = int(budget) if budget is not None else None
         velocity = inp.velocity_hist if inp.velocity_hist is not None else inp.sku_velocity(range(1, 61))
         plan = phaser.build_plan(inp, st, inp.target_loc, velocity)
         plan.sort(key=lambda m: (-(m.value / m.legs), m.sku))

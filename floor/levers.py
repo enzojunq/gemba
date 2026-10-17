@@ -111,7 +111,8 @@ def _approve_tonight(inputs: Inputs, s: FloorState, lv: c.ReslotTonight, day: in
     exclude = list(lv.exclude_zones) + pz
     ranked = phaser.rank_moves(inputs, s)
     frozen = s.frozen_now(day) + s.closed_now(day)
-    chosen = phaser.select_tonight(ranked, lv.n_moves, lv.include_zones, exclude, protect, frozen, lv.order, inputs)
+    budget = lv.n_moves if s.legs_per_night is None else min(lv.n_moves, s.legs_per_night)
+    chosen = phaser.select_tonight(ranked, budget, lv.include_zones, exclude, protect, frozen, lv.order, inputs)
     seq0 = max((m.seq for m in s.moves), default=0) + 1
     for i, r in enumerate(chosen):
         m = r["_move"]

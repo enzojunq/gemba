@@ -81,6 +81,7 @@ class FloorState:
     recal: dict[str, float] = field(default_factory=dict)       # family id -> factor
     violations_pending: list[str] = field(default_factory=list)
     key_customer: str = ""
+    legs_per_night: int | None = None   # scenario overrides.budgets.legs_per_night caps each night's approval
     surge_shift: int = 0        # perturbation: scripted demand_surge windows are pre-shifted in `effects`
 
     def copy(self) -> "FloorState":

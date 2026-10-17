@@ -57,12 +57,20 @@ def validate_scenario(raw: dict) -> list[str]:
             errs.append(f"event {i} (demand_surge): needs exactly one of skus | family | customer")
         if "days" in args and not (isinstance(args["days"], int) and args["days"] >= 1):
             errs.append(f"event {i} ({kind}): days must be an int >= 1")
-    for shift, pools in (raw.get("overrides", {}).get("headcounts") or {}).items():
+    overrides = raw.get("overrides") or {}
+    for shift, pools in (overrides.get("headcounts") or {}).items():
         if shift not in c.Shift.__args__:  # type: ignore[attr-defined]
-            errs.append(f"overrides.headcounts: unknown shift {shift!r}")
-        for p in pools or {}:
+            errs.append(f"overrides.headcounts: unknown shift {shift!r} (day | swing | night)")
+        for p, n in (pools or {}).items():
             if p not in POOLS:
-                errs.append(f"overrides.headcounts.{shift}: unknown pool {p!r}")
+                errs.append(f"overrides.headcounts.{shift}: unknown pool {p!r} ({' | '.join(sorted(POOLS))})")
+            elif not isinstance(n, int) or n < 0:
+                errs.append(f"overrides.headcounts.{shift}.{p}: headcount must be an int >= 0, got {n!r}")
+    for key, val in (overrides.get("budgets") or {}).items():
+        if key != "legs_per_night":
+            errs.append(f"overrides.budgets: unknown budget {key!r} (legs_per_night)")
+        elif not isinstance(val, int) or val < 0:
+            errs.append(f"overrides.budgets.legs_per_night must be an int >= 0, got {val!r}")
     return errs
 
 

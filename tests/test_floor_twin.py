@@ -390,3 +390,34 @@ def test_real_hero_cascade_under_big_bang(real_twin):
         if c2:
             fired.append((seed, c2[0].caused_by))
     assert fired and all(cb.startswith("dec:") for _, cb in fired), fired
+
+
+# ----------------------------------------------------------------------------- scenario overrides
+def test_overrides_headcounts_and_legs_budget(twin):
+    base = c.Scenario(id="o0", seed=3, days=(61, 70))
+    short = base.model_copy(update={"id": "o1", "overrides": {"headcounts": {"day": {"forklift": 10}}}})
+    s_base = twin.initial_state(base)
+    s_short = twin.initial_state(short)
+    assert twin.view(s_short).labor_available["day"]["forklift"] == 10
+    assert twin.view(s_short).labor_available["swing"]["forklift"] == twin.view(s_base).labor_available["swing"]["forklift"]
+    _, r0, _ = run(twin, {}, days=[61], scenario=base)
+    _, r0b, _ = run(twin, {}, days=[61], scenario=base.model_copy(update={"overrides": {}}))
+    _, r1, _ = run(twin, {}, days=[61], scenario=short)
+    assert r0[0].model_dump_json() == r0b[0].model_dump_json()
+    assert r1[0].kpis.labor_cost_usd < r0[0].kpis.labor_cost_usd
+    # the mini fixture (281 lines/day) never queues, so the on-time effect is asserted on the real db below
+    capped = base.model_copy(update={"id": "o2", "overrides": {"budgets": {"legs_per_night": 50}}})
+    _, rc, _ = run(twin, {61: [reslot(200, "d")]}, days=[61], scenario=capped)
+    assert 0 < rc[0].kpis.moves_done <= 50
+    errs = validate_scenario({"id": "x", "seed": 1, "days": [61, 70], "overrides": {
+        "headcounts": {"dawn": {"forklift": 3}, "day": {"robots": 1, "pm": -2}}, "budgets": {"legs_per_night": "many", "x": 1}}})
+    assert len(errs) == 5 and any("unknown shift 'dawn'" in e for e in errs) and any("unknown pool 'robots'" in e for e in errs)
+
+
+def test_real_override_forklift_10_lowers_on_time(real_twin):
+    sc = load_scenario("reslot_default")
+    short = sc.model_copy(update={"overrides": {"headcounts": {"day": {"forklift": 10}, "swing": {"forklift": 10}}}})
+    _, r0, _ = run(real_twin, {}, days=[61], scenario=sc)
+    _, r1, _ = run(real_twin, {}, days=[61], scenario=short)
+    assert real_twin.view(real_twin.initial_state(short)).labor_available["day"]["forklift"] == 10
+    assert r1[0].kpis.on_time_pct < r0[0].kpis.on_time_pct
