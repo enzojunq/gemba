@@ -152,4 +152,19 @@ One section per phase: what was built, how it is tested, what is pending. Update
 
 **Known:** the engine writes `caused_by` edges out of `kpi:` nodes (C6) but nothing points into them, so the trace from a regret day's KPI node relies on the fallbacks. Fine for the demo; a `day_results -> kpi` edge would make it exact.
 
-## Integration with A - waiting for `floor/twin.py` (data lane landed; `inputs.db` generated and verified 12:45)
+## Integration with A - started 13:15
+
+**13:15 merged.** A's twin, data and console rebased with B's review fixes: **265 tests + 1 live** green on `main` (`24f502a`). `make_twin("auto")` picked up `floor.twin.Twin` with no code change; `runs.twin` records it.
+
+**13:18 first real-twin run** (`bt-6b997749`, StaticRules, 30 days, seed 1): **10.4 s wall**, status done. Mean on-time 87.1, mis-pick 0.38, LPH 82.8, progress 92.4, labor $536,589. Consequences fired: `director_escalation` (65), `replen_alert` (65, 66). 88 failed daily checks (mostly on-time < 95 on surge days).
+
+**Findings for A (floor/):**
+1. Progress plateaus at 92.4% from day 81 although static requests 200 moves every night from day 83 (`moves_done` = 0 on days 83-90). Either the remaining ~170 moves are blocked (frozen/protected slots, staging) or `phaser.select_tonight` returns nothing. A's own loop reported 96.6% by day 90, so something differs when driven through `engine.run` (events delivered once on their start day; `pause_reslot` on event days incl. consequence events).
+2. Days 89 and 90 have identical KPIs (on-time 85.5, mis-pick 0.36, LPH 84.6, 8 jam hours, pm 1.30). Different demand should not give identical results.
+3. The day-69 demand surge (x3, 5 days) drives on-time to 69-76% with 2-3k stockout lines/day and 9-10 jam hours. It is the trap biting, but the scorecard sees the 87% mean; worth a look at whether x3 for 5 days is the intended severity.
+4. Static pauses on `replen_alert` (a consequence event) as well as on scripted events. If baselines should only pause on exogenous events, say so and B changes `StaticRules`.
+
+**Answers to the console lane's questions:**
+1. `drift_flags.response` decoding: fixed on B's side (`_decode` is tolerant).
+2. Constraint `owner_role`: now `args["owner_role"]` if the constraint event carries it, else `decided_by`. The org sets it for locks.
+3. `utterances.role` is the **role id** (`program_manager`, `quality`, ...), not the first name. Map with `org.roles.load_roles()[id].name` (Megan, Ellen, ...). Stable across renames.

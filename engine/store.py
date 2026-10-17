@@ -278,7 +278,8 @@ class RunStore:
                 deviates_from_top_score=deviates_from_top_score, caused_by=dec_caused, rejections=dumps(rejections)))
             self._edges(conn, run_id, dec_caused, c.node_id(c.DEC, decision.decision_id), "decision", day)
             for con in decision.constraints:
-                self.write_constraint(run_id, con, owner_role=decision.decided_by,
+                # A lock Ellen issued should show Ellen on the board, not the chair (console lane's ask).
+                self.write_constraint(run_id, con, owner_role=con.args.get("owner_role") or decision.decided_by,
                                       caused_by=c.node_id(c.DEC, decision.decision_id), conn=conn, day=day)
             conn.execute(insert(day_results).values(
                 run_id=run_id, day=day, kpis=dumps(result.kpis), hourly=dumps(result.hourly),
