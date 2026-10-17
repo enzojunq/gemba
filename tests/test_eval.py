@@ -122,3 +122,74 @@ def test_cli(tmp_path):
     for ct in ("do_nothing", "big_bang", "static"):
         assert f"| {ct} |" in p.stdout
     assert "| contender |" in p.stdout and out.read_text(encoding="utf-8").strip() == p.stdout.strip()
+
+
+def test_key_customer_ids_and_surge_families():
+    import re
+    for sid in ("test_1", "train_2"):
+        [kc] = [e for e in ev.load_scenario(sid).events if e.kind == "key_customer_week"]
+        assert kc.args["customer"] == "C001"
+    for p in sorted((ROOT / "scenarios").glob("*.yaml")):
+        sc = ev.load_scenario(p.stem)
+        for e in sc.events:
+            if e.kind == "key_customer_week":
+                assert e.args["customer"] == "C001", p.name
+            if e.kind == "demand_surge":
+                fam = str(e.args["family"])
+                assert fam == "seasonal" or (re.fullmatch(r"F\d{3}", fam) and 1 <= int(fam[1:]) <= 300), p.name
+
+
+def test_twin_factory_semantics():
+    from engine.run import twin_factory
+    stub = StubTwin()
+    f = twin_factory(stub)
+    a, b = f(), f()
+    assert isinstance(a, StubTwin) and a is not stub and a is not b  # StubTwin instances are deep-copied
+    made = []
+    g = twin_factory(lambda: made.append(1) or StubTwin())
+    g(), g()
+    assert len(made) == 2  # a factory is called once per run
+    assert isinstance(twin_factory("stub")(), StubTwin)
+
+    class RealishTwin:  # an instance that is not a StubTwin and not callable
+        pass
+
+    with pytest.raises(TypeError):
+        twin_factory(RealishTwin())
+
+
+def test_evaluate_accepts_twin_factory(tmp_path):
+    store = _store(tmp_path)
+    made = []
+    rows = evaluate(["reslot_default"], "customer_first", ["static"], seeds=[1], days=(61, 62), store=store,
+                    twin=lambda: made.append(1) or StubTwin(), snapshot_dir=str(tmp_path / "snap"))
+    assert len(rows) == 1 and len(made) == 2  # do_nothing (REF) + static, one fresh twin each
+
+
+def test_use_processes_rules(tmp_path):
+    from eval.run_eval import _use_processes
+    file_store = _store(tmp_path)
+    assert _use_processes(4, 3, file_store, None, None)
+    assert _use_processes(4, 3, file_store, "stub", None)
+    assert not _use_processes(1, 3, file_store, None, None)  # parallel=1 -> threads
+    assert not _use_processes(4, 1, file_store, None, None)  # a single job
+    assert not _use_processes(4, 3, file_store, StubTwin(), None)  # an instance cannot cross processes
+    assert not _use_processes(4, 3, file_store, None, object())  # an in-memory LLM (fakes in tests)
+    assert not _use_processes(4, 3, RunStore("sqlite://"), None, None)  # in-memory store
+
+
+def test_crew_job_runs_in_spawned_process(tmp_path, monkeypatch):
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    from eval.run_eval import _crew_job
+    store = _store(tmp_path)
+    monkeypatch.setenv("GEMBA_SNAPSHOT_DIR", str(tmp_path / "snap"))
+    with ProcessPoolExecutor(max_workers=2, mp_context=multiprocessing.get_context("spawn")) as pool:
+        futs = [pool.submit(_crew_job, "static", "reslot_default", "customer_first", s, "v0", store.url, "stub",
+                            (61, 62), None, str(tmp_path / "snap")) for s in (1, 2)]
+        rids = [f.result(timeout=240) for f in futs]
+    for rid in rids:
+        r = store.get_run(rid)
+        assert r["status"] == "done" and r["twin"] == "StubTwin" and r["mode"] == "eval"
+        assert [d["day"] for d in store.day_results(rid)] == [61, 62]

@@ -12,8 +12,11 @@ least one failed daily check; they rank by `drop + 0.25 * failed_daily_checks` a
 `max_regret_days` are kept.
 
 Tracing. The worst KPI is the scorecard term that fell the most. Starting nodes, in order:
-`kpi:<run>:<day>:<kpi>` for every KPI (worst first), then the consequence events logged for
-days day+1 .. day+2 (the twin writes C1-C7 events the day after the KPIs that caused them).
+first the consequence events dated day+1 .. day+5 whose `caused_by` is a `kpi:` or `dec:`
+node on or before the regret day (the delayed C3/C5 consequences land several days later);
+then, as before, `kpi:<run>:<day>:<kpi>` for every KPI (worst first) and the consequence
+events logged for days day+1 .. day+2 (the twin writes C1-C7 events the day after the KPIs
+that caused them).
 The originating decision is a `dec:` node in their cascade with day <= the regret day (direct
 causes first, then the latest). If the cascade has none (common: the engine writes no edges
 into KPI nodes), the latest decision with levers before the regret day is used, and the trace
@@ -35,7 +38,6 @@ run ids. `--playbook` is an alias of `--version` (Makefile `make retro`).
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import logging
 import sys
@@ -50,7 +52,8 @@ import contracts as c
 from engine import events as ev
 from engine import snapshot
 from engine.fork import fork_run
-from engine.run import make_policy, make_twin, run
+from engine.run import make_policy, run, twin_factory
+from engine.run import policy_kwargs as build_policy_kwargs
 from engine.store import RunStore
 from learn import playbook as pb
 from llm.prompt import build_messages
@@ -64,6 +67,7 @@ COACH_MAX_TOKENS = 2000
 HARD_LIMIT_CHECKS: tuple[str, ...] = ("daily.safety_risk_max", "daily.pm_peak_zone_load",
                                       "daily.expected_near_misses")
 FAILED_CHECK_WEIGHT = 0.25
+TRACE_LOOKAHEAD_DAYS = 5  # consequences up to day+5 can start a trace (C3/C5 are delayed)
 SHOWN_KPIS: tuple[str, ...] = ("on_time_pct", "mispick_rate", "lph", "labor_cost_usd", "reslot_progress_pct",
                                "moves_done", "overtime_hours", "staging_occupancy_max", "safety_risk_max",
                                "pm_peak_zone_load", "near_misses")
@@ -145,12 +149,10 @@ class RetroResult:
 
 
 def _fresh(twin: Any) -> Any:
-    """A per-run twin (twins hold per-run state). Factories/classes are called."""
-    if twin is None or isinstance(twin, str):
-        return make_twin(twin)
-    if isinstance(twin, type) or (callable(twin) and not isinstance(twin, c.FloorTwin)):
-        return twin()
-    return copy.deepcopy(twin)
+    """A fresh twin per run (twins hold per-run state). `twin` is a name (None = $GEMBA_TWIN /
+    "auto", via `make_twin`), a factory/class (called), or a StubTwin instance (deep-copied);
+    a real-twin instance is refused -- see `engine.run.twin_factory`."""
+    return twin_factory(twin)()
 
 
 def _day_kpis(store: RunStore, run_id: str) -> dict[int, c.Kpis]:
@@ -270,12 +272,37 @@ def _path(edges: list[dict], src: str, dst: str) -> list[str] | None:
     return None
 
 
+def _cause_day(caused_by: str | None, decs: dict[str, dict]) -> int | None:
+    """The day of a `kpi:<run>:<day>:<kpi>` or `dec:<id>` node, else None."""
+    if not caused_by:
+        return None
+    if caused_by.startswith(c.KPI):
+        parts = caused_by[len(c.KPI):].rsplit(":", 2)
+        try:
+            return int(parts[-2]) if len(parts) == 3 else None
+        except ValueError:
+            return None
+    if caused_by.startswith(c.DEC):
+        d = decs.get(caused_by[len(c.DEC):])
+        return d["day"] if d else None
+    return None
+
+
 def trace(store: RunStore, regret: RegretDay) -> Trace | None:
     rid, day = regret.run_id, regret.day
     decs = {d["decision_id"]: d for d in store.decisions(rid)}
-    starts = [c.kpi_node_id(rid, day, k) for k in [*regret.kpi_order, "mispick_rate_by_customer"]]
-    starts += [c.node_id(c.EVT, e["event_id"]) for e in store.events(rid)
+    events = store.events(rid)
+    starts = []
+    for e in sorted((e for e in events if e.get("source") == "consequence"
+                     and day + 1 <= (e.get("day") or 0) <= day + TRACE_LOOKAHEAD_DAYS),
+                    key=lambda e: (e.get("day") or 0, e["event_id"])):
+        cd = _cause_day(e.get("caused_by"), decs)
+        if cd is not None and cd <= day:
+            starts.append(c.node_id(c.EVT, e["event_id"]))
+    starts += [c.kpi_node_id(rid, day, k) for k in [*regret.kpi_order, "mispick_rate_by_customer"]]
+    starts += [c.node_id(c.EVT, e["event_id"]) for e in events
                if e.get("source") == "consequence" and day + 1 <= (e.get("day") or 0) <= day + 2]
+    starts = list(dict.fromkeys(starts))
     for start in starts:
         edges = store.cascade(rid, start)
         if not edges:
@@ -444,7 +471,7 @@ def retro_full(train_run_ids: list[str], *, store: RunStore, llm: Any, twin: Any
         pname = policy_name or run_policy_name(store, rid)
         pkw = policy_kwargs
         if pkw is None and pname == "org":
-            pkw = {"llm": llm, "store": store, "profile": prof, "playbook_rules": rules_v}
+            pkw = {**build_policy_kwargs(prof, store, version, run_scenario(store, rid)), "llm": llm}
         handled: set[str] = set()
         for rd in regret_days(store, rid, ref_id, prof, max_regret_days):
             tr = trace(store, rd)

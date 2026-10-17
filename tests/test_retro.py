@@ -11,7 +11,7 @@ from engine import events as ev
 from engine.run import run
 from engine.store import RunStore
 from engine.stub_twin import StubTwin
-from eval.baselines import NaiveBigBang
+from eval.baselines import NaiveBigBang, StaticRules
 from learn import gate as gate_mod
 from learn import playbook as pb
 from learn.retro import CoachProposal, find_ref_run, regret_days, retro, retro_full, trace
@@ -173,3 +173,61 @@ def test_gate(store, monkeypatch, rows, promoted):
 
 def test_gate_contender_names():
     assert gate_mod.contender_for("v0") == "crew" and gate_mod.contender_for("v2") == "crew_v2"
+
+
+def _write_day(store, rid, day, levers, consequences=()):
+    did = f"{rid}-d{day}"
+    dec = c.Decision(decision_id=did, day=day, decided_by="org", rationale="r",
+                     levers=[lv.model_copy(update={"decision_id": did}) for lv in levers])
+    store.write_day(rid, day, dec, [], c.DayResult(day=day, kpis=c.Kpis(on_time_pct=96.0)),
+                    new_consequences=list(consequences))
+    return did
+
+
+def test_trace_starts_from_delayed_consequence(store):
+    from learn.retro import RegretDay
+    rid = store.create_run("backtest", "reslot_default", "customer_first", "v0", 1)
+    _write_day(store, rid, 61, [c.ReslotTonight(n_moves=200)])
+    _write_day(store, rid, 62, [])
+    d63 = _write_day(store, rid, 63, [c.Overtime(shift="day", pool="pm", hours=2)])
+    late = c.Event(event_id="c3pm-late", kind="absenteeism", day=66, args={"pool": "pm", "pct": 15, "days": 3},
+                   announced_day=66, source="consequence", caused_by=c.node_id(c.DEC, d63))
+    after = c.Event(event_id="c3pm-after", kind="absenteeism", day=66, args={"pool": "pm", "pct": 15, "days": 3},
+                    announced_day=66, source="consequence", caused_by=c.node_id(c.DEC, f"{rid}-d65"))
+    _write_day(store, rid, 64, [], consequences=[late])
+    _write_day(store, rid, 65, [c.Overtime(shift="day", pool="pm", hours=2)], consequences=[after])
+    tr = trace(store, RegretDay(rid, 63, -0.1, 0.0, 0.1, [], ["on_time_pct"]))
+    assert tr is not None and tr.via == "cascade"
+    assert tr.decision["decision_id"] == d63  # day+3 consequence of the regret-day decision
+    assert "evt:c3pm-late" in tr.chain
+
+
+def test_retro_org_forks_get_policy_kwargs(store, parent, monkeypatch):
+    seen = []
+
+    class FakeOrg(StaticRules):
+        name = "org"
+
+        def __init__(self, run_id, llm=None, profile=None, store=None, playbook_rules=None, seed=0,
+                     scenario_end=None):
+            super().__init__(run_id)
+            seen.append(dict(llm=llm, profile=profile, store=store, playbook_rules=playbook_rules, seed=seed,
+                             scenario_end=scenario_end))
+
+    monkeypatch.setattr("org.standup.OrgPolicy", FakeOrg)
+    llm = FakeCoach(PAUSE2)
+    retro_full([parent], store=store, llm=llm, twin=StubTwin(), profile="customer_first", version="v0",
+               max_regret_days=1, horizon=2, policy_name="org")
+    assert seen, "the verification fork should build the org policy"
+    kw = seen[-1]
+    assert kw["llm"] is llm and kw["store"] is store and kw["profile"].id == "customer_first"
+    assert kw["scenario_end"] == 66 and kw["seed"] == 1 and kw["playbook_rules"] == []
+
+
+def test_retro_refuses_real_twin_instance(store, parent):
+    class RealishTwin:
+        pass
+
+    with pytest.raises(TypeError):
+        retro_full([parent], store=store, llm=FakeCoach(PAUSE2), twin=RealishTwin(), profile="customer_first",
+                   version="v0", max_regret_days=1, horizon=2, policy_name="static")

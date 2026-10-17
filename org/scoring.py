@@ -171,20 +171,32 @@ def aggregate_run(days: list[Kpis]) -> Kpis:
 # --------------------------------------------------------------------------- feasibility
 
 
-def feasibility(option: WhatIf, profile: Profile) -> Feasibility:
+def feasibility(option: WhatIf, profile: Profile, ref: WhatIf | None = None) -> Feasibility:
     """Check an option's what-if against the profile hard limits (spec 10.4): infeasible if
-    expected near-misses, safety_risk_max or PM peak zone load exceed their limits."""
-    values = {
-        "expected_near_misses": option.expected_near_misses,
-        "safety_risk_max": option.safety_risk_max,
-        "pm_peak_zone_load": option.pm_peak_zone_load,
-    }
-    breaches = {
-        m: values[m] - limit
-        for m, limit in profile.hard_limits.items()
-        if m in values and values[m] > limit
-    }
+    expected near-misses, safety_risk_max or PM peak zone load exceed their limits.
+
+    With `ref` (the do-nothing what-if over the same horizon): when the reference already
+    breaches a limit, the floor is in breach whatever the org does, so an option breaches
+    only if it is worse than the reference: `value > max(limit, ref_value)`, and the breach
+    amount is `value - max(limit, ref_value)`."""
+    values = _limit_values(option)
+    ref_values = _limit_values(ref) if ref is not None else {}
+    breaches: dict[str, float] = {}
+    for m, limit in profile.hard_limits.items():
+        if m not in values:
+            continue
+        bar = max(limit, ref_values.get(m, limit))
+        if values[m] > bar:
+            breaches[m] = values[m] - bar
     return Feasibility(feasible=not breaches, breaches=breaches)
+
+
+def _limit_values(w: WhatIf) -> dict[str, float]:
+    return {
+        "expected_near_misses": w.expected_near_misses,
+        "safety_risk_max": w.safety_risk_max,
+        "pm_peak_zone_load": w.pm_peak_zone_load,
+    }
 
 
 def least_bad(options: list[Feasibility]) -> int:

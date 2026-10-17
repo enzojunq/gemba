@@ -3,7 +3,11 @@
 Runs execute in a background daemon thread (SQLite is in WAL mode, so the console reads
 while the engine writes). `start_run` / `fork_run` return the run id as soon as its `runs`
 row exists (status "queued"); the thread flips it to "running", then "done" or "failed".
+A failed run's reason (repr of the exception) is in `runs.error`; read it with `run_error`.
 The store is `RunStore()` ($RUN_STORE_URL, default sqlite:///runs.db) unless one is passed.
+
+Single runs stay on threads (one run at a time per console click, and the store / LLM client
+are shared in-process); eval's parallel crew runs use processes (eval/run_eval.py).
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from typing import Literal
 import contracts as c
 from engine import events as ev
 from engine.fork import prepare_fork
-from engine.run import make_policy, make_twin, run
+from engine.run import make_policy, make_twin, policy_kwargs, run
 from engine.store import RunStore
 from org.scoring import load_profile
 
@@ -35,10 +39,10 @@ def _spawn(run_id: str, store: RunStore, target, *args, **kwargs) -> None:
     def body() -> None:
         try:
             target(*args, **kwargs)
-        except BaseException:  # run() already marked it failed if it got that far
+        except BaseException as exc:  # run() already marked it failed if it got that far
             log.exception("background run %s failed", run_id)
             if (store.get_run(run_id) or {}).get("status") != "failed":
-                store.finish_run(run_id, "failed")
+                store.finish_run(run_id, "failed", error=repr(exc)[:500])
 
     t = threading.Thread(target=body, name=f"run-{run_id}", daemon=True)
     _threads[run_id] = t
@@ -59,8 +63,8 @@ def start_run(scenario: str, profile: str, playbook: str, policy: str = "org", s
     run_id = store.create_run("backtest", sc.id, prof.id, playbook, sc.seed, status="queued")
 
     def go() -> None:
-        run(sc, prof, make_policy(policy, run_id), twin or make_twin(), playbook_version=playbook,
-            store=store, run_id=run_id)
+        pol = make_policy(policy, run_id, **policy_kwargs(prof, store, playbook, sc))
+        run(sc, prof, pol, twin or make_twin(), playbook_version=playbook, store=store, run_id=run_id)
 
     _spawn(run_id, store, go)
     return run_id
@@ -74,8 +78,9 @@ def fork_run(parent_run_id: str, day: int, levers: list[c.Lever] = [], constrain
                                                       store=store)
 
     def go() -> None:
-        run(sc, prof, make_policy(policy_name, child), twin or make_twin(), mode="fork",
-            playbook_version=store.get_run(child)["playbook_version"] or "v0", store=store, fork=spec)
+        playbook = store.get_run(child)["playbook_version"] or "v0"
+        pol = make_policy(policy_name, child, **policy_kwargs(prof, store, playbook, sc))
+        run(sc, prof, pol, twin or make_twin(), mode="fork", playbook_version=playbook, store=store, fork=spec)
 
     _spawn(child, store, go)
     return child
@@ -86,6 +91,11 @@ def run_status(run_id: str, *, store: RunStore | None = None) -> Status:
     if r is None:
         raise KeyError(f"unknown run {run_id}")
     return r["status"]
+
+
+def run_error(run_id: str, *, store: RunStore | None = None) -> str | None:
+    """The failure reason of a failed run (repr of the exception), else None."""
+    return (store or RunStore()).run_error(run_id)
 
 
 def wait(run_id: str, timeout: float | None = None) -> None:

@@ -13,11 +13,13 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import copy
+import inspect
 import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import contracts as c
 from engine import events as ev
@@ -34,15 +36,45 @@ RECALIBRATE_WINDOW = 3  # spec 9.4a: actual / forecast over the last 3 days
 # --------------------------------------------------------------------------- factories
 
 
+def policy_kwargs(profile: c.Profile | str, store: RunStore, playbook: str | None,
+                  scenario: c.Scenario) -> dict[str, Any]:
+    """The constructor kwargs every org policy gets (one place, used by the CLI, the API,
+    forks, eval and retro): the loaded Profile, the engine's store, the rules of `playbook`
+    (`learn.playbook.load_rules`; "v0"/None -> []), the scenario seed and its last day.
+    Callers add `llm=` themselves when they hold one. Baselines ignore all of it."""
+    prof = load_profile(profile) if isinstance(profile, str) else profile
+    rules: list[dict] = []
+    if playbook and playbook != "v0":
+        from learn.playbook import load_rules  # lazy: the engine must import without learn/
+        rules = load_rules(store, playbook)
+    return dict(profile=prof, store=store, playbook_rules=rules, seed=scenario.seed,
+                scenario_end=scenario.days[1])
+
+
+def _accepted_kwargs(cls: type, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Drop kwargs the constructor does not take (an older OrgPolicy), with a warning."""
+    try:
+        params = inspect.signature(cls).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    dropped = sorted(k for k in kwargs if k not in params)
+    if dropped:
+        log.warning("%s does not accept %s; not passed", cls.__name__, ", ".join(dropped))
+    return {k: v for k, v in kwargs.items() if k in params}
+
+
 def make_policy(name: str, run_id: str, llm: Any = None, **kwargs: Any) -> c.DecisionPolicy:
-    """Baselines from `eval.POLICIES`; "org" imports `org.standup.OrgPolicy` lazily."""
+    """Baselines from `eval.POLICIES`; "org" imports `org.standup.OrgPolicy` lazily.
+    Build `kwargs` with `policy_kwargs(...)`."""
     if name == "org":
         try:
             from org.standup import OrgPolicy  # type: ignore[import-not-found]
         except ImportError as e:
             raise RuntimeError("policy 'org' needs org.standup.OrgPolicy, which is not built yet; "
                                "use one of the baselines: do_nothing, big_bang, static") from e
-        return OrgPolicy(run_id=run_id, llm=llm, **kwargs)
+        return OrgPolicy(run_id=run_id, llm=llm, **_accepted_kwargs(OrgPolicy, kwargs))
     from eval import POLICIES
     if name not in POLICIES:
         raise ValueError(f"unknown policy {name!r}; choose org or one of {sorted(POLICIES)}")
@@ -51,24 +83,55 @@ def make_policy(name: str, run_id: str, llm: Any = None, **kwargs: Any) -> c.Dec
 
 def make_twin(name: str | None = None) -> c.FloorTwin:
     """"stub" -> engine.stub_twin.StubTwin; "real" -> A's twin (`floor.twin.make_twin()` or
-    `floor.twin.Twin()`); "auto" (default, or $GEMBA_TWIN) -> real if importable, else stub."""
+    `floor.twin.Twin()`); "auto" (default, or $GEMBA_TWIN) -> real if importable, else stub.
+
+    "auto" falls back to the stub ONLY when `floor` / `floor.twin` itself is missing; any other
+    error raised while importing A's module (a missing dependency, a bug) propagates, so a
+    broken real twin is never silently replaced. The twin in use is logged at WARNING and
+    `engine.run.run` records its class name in `runs.twin`."""
     name = name or os.environ.get("GEMBA_TWIN", "auto")
     if name == "stub":
         from engine.stub_twin import StubTwin
+        log.warning("twin in use: StubTwin (requested 'stub')")
         return StubTwin()
     try:
         import floor.twin as ft  # type: ignore[import-not-found]
-    except ImportError:
+    except ModuleNotFoundError as e:
+        if e.name not in ("floor", "floor.twin"):
+            raise
         if name == "real":
-            raise RuntimeError("twin 'real' needs floor.twin (Person A), which is not importable yet")
+            raise RuntimeError("twin 'real' needs floor.twin (Person A), which is not importable yet") from e
         from engine.stub_twin import StubTwin
-        log.warning("floor.twin not importable; using StubTwin")
+        log.warning("twin in use: StubTwin (floor.twin not found) -- this is NOT the real floor")
         return StubTwin()
     if hasattr(ft, "make_twin"):
-        return ft.make_twin()
-    if hasattr(ft, "Twin"):
-        return ft.Twin()
-    raise RuntimeError("floor.twin must expose make_twin() or Twin")
+        twin = ft.make_twin()
+    elif hasattr(ft, "Twin"):
+        twin = ft.Twin()
+    else:
+        raise RuntimeError("floor.twin must expose make_twin() or Twin")
+    log.warning("twin in use: %s (floor.twin)", type(twin).__name__)
+    return twin
+
+
+def twin_factory(twin: Any = None) -> Callable[[], c.FloorTwin]:
+    """A zero-arg callable returning a FRESH twin per run (twins hold per-run state such as the
+    seed and calibration, so runs never share one).
+
+    `twin` may be None or a name ("stub" | "real" | "auto"; None = $GEMBA_TWIN or "auto") ->
+    `make_twin(name)` per run; a class or any zero-arg factory -> called per run; or a bare
+    instance, which is accepted ONLY when it is a `StubTwin` (small, pure-Python state, safe to
+    deep-copy). A real twin instance is refused: deep-copying A's twin (data tables, caches)
+    is slow and not guaranteed correct, so pass a factory or a name instead."""
+    from engine.stub_twin import StubTwin
+    if twin is None or isinstance(twin, str):
+        return lambda: make_twin(twin)
+    if isinstance(twin, StubTwin):
+        return lambda: copy.deepcopy(twin)
+    if callable(twin):
+        return twin
+    raise TypeError(f"twin must be a name, a factory or a StubTwin instance, got {type(twin).__name__}; "
+                    "pass a factory (e.g. floor.twin.make_twin) for the real twin")
 
 
 # --------------------------------------------------------------------------- forks
@@ -122,6 +185,26 @@ def _stamp(decision: c.Decision) -> c.Decision:
     levers = [lv if lv.decision_id else lv.model_copy(update={"decision_id": decision.decision_id})
               for lv in decision.levers]
     return decision.model_copy(update={"levers": levers})
+
+
+def _drop_rejected(decision: c.Decision, rejections: list[c.LeverRejection]) -> c.Decision:
+    """The decision as applied: each rejected lever removed once (rejections stay in
+    `decisions.rejections`)."""
+    if not rejections:
+        return decision
+    levers = list(decision.levers)
+    for rj in rejections:
+        for i, lv in enumerate(levers):
+            if lv is rj.lever or lv == rj.lever:
+                del levers[i]
+                break
+    return decision.model_copy(update={"levers": levers})
+
+
+def _redate(e: c.Event, day: int) -> c.Event:
+    """A consequence dated <= today would never be delivered: move it to tomorrow."""
+    log.info("consequence %s dated day %s <= today %s; re-dated to day %s", e.event_id, e.day, day, day + 1)
+    return e.model_copy(update={"day": day + 1, "announced_day": c.announced_day(e.kind, day + 1)})
 
 
 def _reslot_n(decision: c.Decision) -> int | None:
@@ -178,14 +261,15 @@ def run(scenario: c.Scenario | str, profile: c.Profile | str, policy: c.Decision
         store.set_status(run_id, "running")
     else:
         run_id = store.create_run(mode, scenario.id, profile.id, playbook_version, scenario.seed)
+    store.set_twin(run_id, type(twin).__name__)
     if getattr(policy, "run_id", None) == "":
         policy.run_id = run_id  # baselines prefix decision ids with the run id
 
     try:
         _loop(run_id, scenario, profile, policy, twin, store, fork, ref_kpis, do_nothing_kpis, snapshot_dir)
-    except BaseException:
+    except BaseException as exc:
         log.exception("run %s failed", run_id)
-        store.finish_run(run_id, "failed", llm_usd=store.llm_usd_total(run_id))
+        store.finish_run(run_id, "failed", llm_usd=store.llm_usd_total(run_id), error=repr(exc)[:500])
         raise
     return run_id
 
@@ -214,13 +298,26 @@ def _loop(run_id: str, scenario: c.Scenario, profile: c.Profile, policy: c.Decis
         store.relog_events(run_id, ctx.pending + ctx.inbox_events)
     else:
         ctx.checks = policy.pick_thresholds(verifier.template(profile))
+    forced: c.Decision | None = None
     if fork is not None:
         days = [d for d in days if d >= fork.day]
+        forced = _stamp(forced_decision(fork))
+        restorer = getattr(policy, "restore", None)
+        if callable(restorer):
+            # The org rebuilds its run state from the parent's "org_state" and applies the
+            # forced decision's effects (pauses, hires, ...). Payload {} on a first-day fork.
+            restorer(fork.payload or {}, forced)
+    pending_inbox = getattr(policy, "pending_inbox", None)
 
     for day in days:
         # ---- events known this morning
-        inbox_today = [e for t in store.inbox_pop(run_id, day)
-                       if (e := ev.parse_inbox(t, run_id=run_id, day=day, llm=getattr(policy, "llm", None))) is not None]
+        inbox_today: list[c.Event] = []
+        for text in store.inbox_pop(run_id, day):
+            e = ev.parse_inbox(text, run_id=run_id, day=day, llm=getattr(policy, "llm", None))
+            if e is not None:
+                inbox_today.append(e)
+            elif isinstance(pending_inbox, list):
+                pending_inbox.append(text)  # the org reads raw texts it could not parse at the next brief
         ctx.inbox_events += inbox_today
         today = _dedupe([e for e in calendar if e.day == day] + inbox_today
                         + [e for e in ctx.pending if e.day == day])
@@ -228,25 +325,27 @@ def _loop(run_id: str, scenario: c.Scenario, profile: c.Profile, policy: c.Decis
 
         # ---- decide
         view = twin.view(state)
-        if fork is not None and day == fork.day:
-            decision = forced_decision(fork)
+        if forced is not None and day == fork.day:
+            decision = forced
         else:
             decision = policy.decide(day, view, c.visible(known, day), twin, state)
         decision = _stamp(decision)
         ctx.constraints = _dedupe(ctx.constraints + list(decision.constraints))
-        for lv in decision.levers:
-            if lv.kind == "pause_reslot":
-                ctx.paused_until = max(ctx.paused_until, day + lv.days - 1)
 
         # ---- act and simulate
         state, rejections = twin.apply_levers(state, decision.levers, day)
+        rejections = list(rejections or [])
+        if rejections:
+            decision = _drop_rejected(decision, rejections)  # store / pause / drift see what was applied
+            on_rej = getattr(policy, "on_rejections", None)
+            if callable(on_rej):
+                on_rej(day, rejections)
+        for lv in decision.levers:
+            if lv.kind == "pause_reslot":
+                ctx.paused_until = max(ctx.paused_until, day + lv.days - 1)
         step_events = c.active(_dedupe(known + list(decision.constraints)), day)
         state, result = twin.step_day(state, day, twin.actual_demand(day), step_events)
-        new_cons = list(twin.consequences(state, result, run_id))
-        for e in new_cons:
-            if e.day <= day:
-                log.warning("consequence %s is dated day %s <= today %s; it will never be delivered",
-                            e.event_id, e.day, day)
+        new_cons = [e if e.day > day else _redate(e, day) for e in twin.consequences(state, result, run_id)]
         ctx.pending = _dedupe(ctx.pending + new_cons)
 
         # ---- verify, drift, recalibrate
@@ -256,7 +355,7 @@ def _loop(run_id: str, scenario: c.Scenario, profile: c.Profile, policy: c.Decis
         derived = {"expected_near_misses": exp_nm} if exp_nm is not None else {}
         check_rows = [r.row() for r in verifier.check_day(ctx.checks, result.kpis, derived)]
 
-        explained = (ctx.paused_until >= day or view.move_queue == 0
+        explained = (ctx.paused_until >= day or view.moves_done_total >= view.moves_target_total
                      or any(e.day <= day <= _event_end(e) for e in known + list(decision.constraints)))
         evidence_today = [r["spec_hash"] for r in store.table("evidence", run_id) if r.get("created_day") == day]
         flags = ctx.drift.check(day, {
@@ -277,7 +376,9 @@ def _loop(run_id: str, scenario: c.Scenario, profile: c.Profile, policy: c.Decis
 
         # ---- snapshot (end of day) and the one-transaction day write
         hires = [h for h in store.table("hires", run_id) if h.get("released_day") is None]
+        snap_state = getattr(policy, "snapshot_state", None)
         path = snapshot.save(run_id, day, {
+            "org_state": snap_state() if callable(snap_state) else None,
             "state": state, "pending_consequences": ctx.pending, "active_constraints": ctx.constraints,
             "hires": hires, "done_checks": ctx.checks, "drift_counters": ctx.drift.counters(),
             "rng_state": None, "scenario": scenario, "known_inbox_events": ctx.inbox_events,
@@ -344,10 +445,12 @@ def main(argv: list[str] | None = None) -> int:
         sc = c.Scenario.model_validate(sc.model_dump())
     store = RunStore(args.store)
     store.create_schema()
-    run_id = store.create_run(args.mode, sc.id, args.profile, args.playbook,
-                              args.seed if args.seed is not None else sc.seed)
-    policy = make_policy(args.policy, run_id)
-    run(sc, args.profile, policy, make_twin(args.twin), playbook_version=args.playbook, mode=args.mode,
+    if args.seed is not None:
+        sc = sc.model_copy(update={"seed": args.seed})
+    profile = load_profile(args.profile)
+    run_id = store.create_run(args.mode, sc.id, profile.id, args.playbook, sc.seed)
+    policy = make_policy(args.policy, run_id, **policy_kwargs(profile, store, args.playbook, sc))
+    run(sc, profile, policy, make_twin(args.twin), playbook_version=args.playbook, mode=args.mode,
         seed=args.seed, store=store, run_id=run_id)
     print(run_id)
     for line in summary(store, run_id):

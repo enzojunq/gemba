@@ -17,6 +17,15 @@ Engine-facing extras (all optional for the engine to use):
 - `self.pending_drift`: the engine may append drift flags (or call `on_drift(day, flag)`); they
   are read at the next BRIEF. `self.pending_inbox`: raw inbox texts not yet parsed.
 - `self.last_spec_hashes`: today's evidence spec hashes; `self.llm_usd`, `self.llm_calls`.
+- `on_rejections(day, rejections)`: undo the run-state effects of levers the floor rejected and
+  brief them tomorrow. `snapshot_state()` / `restore(payload, forced)`: the org's run state for
+  snapshots and forks (see `snapshot_state` for the dict shape). `set_day(day)`: dates
+  `llm_calls` rows logged before `decide` (the Event Interpreter runs first).
+
+Ids in prompts are display ids (`m{day}`, `o1..o3`, `ev{day}-{n}`) so the LLM cache hits across
+runs, forks and eval; the store keeps the run-scoped ids (`{run}-m{day}`, `{run}-m{day}-o{n}`,
+`ev-{run}-{day}-{n}`) and the policy maps between them. What-if levers carry provisional ids
+`whatif:{run}:{day}:{n}`; the committed decision re-stamps them with its real id.
 
 The client is synchronous, so positions run in a `ThreadPoolExecutor(max_workers=4)`; their
 results are processed in sorted role order, so the outcome does not depend on thread timing.
@@ -28,10 +37,12 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -51,7 +62,11 @@ from org.scoring import Feasibility, Score, feasibility, least_bad, load_profile
 log = logging.getLogger(__name__)
 
 HORIZON = 3
+"""What-if horizon; clamped to the days left in the scenario (`OrgPolicy._h`)."""
 MAX_OPTIONS = 3
+MAX_AMENDMENTS = 2
+"""Amendment options per meeting. Whatifs per meeting <= 1 REF + 3 options + 2 amendments + 3 lock re-runs."""
+LOCK_MAX_DAYS = authority.LOCK_MAX_DAYS_ALONE
 DEFAULT_STANDING_BUDGET = 200
 RELEASE_AFTER_QUIET_DAYS = 2
 TIE_FRACTION = 0.02
@@ -132,6 +147,10 @@ def _event_end(e: Event) -> int:
     return e.day + max(1, int(e.args.get("days", 1) or 1)) - 1
 
 
+def _lever_key(lv: c.Lever) -> str:
+    return json.dumps(lv.model_dump(mode="json", exclude={"decision_id"}), sort_keys=True)
+
+
 # --------------------------------------------------------------------------- per-meeting state
 
 
@@ -185,8 +204,10 @@ class OrgPolicy:
     name = "org"
 
     def __init__(self, run_id: str, profile: Profile | str | None = None, llm: Any = None, store: Any = None,
-                 roles: dict[str, Role] | None = None, playbook_rules: list[dict] | None = None, seed: int = 0):
+                 roles: dict[str, Role] | None = None, playbook_rules: list[dict] | None = None, seed: int = 0,
+                 scenario_end: int = 90):
         self.run_id = run_id
+        self.scenario_end = int(scenario_end)
         self.profile = (load_profile(profile or "customer_first") if not isinstance(profile, Profile) else profile)
         if store is None:
             from engine.store import RunStore
@@ -225,6 +246,18 @@ class OrgPolicy:
         self.last_spec_hashes: list[str] = []
         self.last_whatif: WhatIf | None = None
         self.last_deviates = False
+        self.last_ref: WhatIf | None = None  # the latest do-nothing REF what-if (reference for KPI bands)
+        self.last_ref_day: int | None = None
+        self.pending_rejections: list[str] = []  # board lines for the next brief
+        self._applied: dict[int, tuple[dict, list[c.Lever]]] = {}  # day -> (run state before, levers applied)
+        self._wn = 0
+        self._amendments = 0
+        self._lock_reruns = 0
+        self._twin: Any = None
+        self._state: Any = None
+        self._events: list[Event] = []
+        self._unparsed: list[str] = []
+        self._rejected: list[str] = []
         self.llm_calls = 0
         self.llm_usd = 0.0
         self.llm_latency_ms = 0
@@ -238,11 +271,163 @@ class OrgPolicy:
         """Engine hook: a drift flag raised at the end of `day` is briefed next morning."""
         self.pending_drift.append(flag)
 
+    def set_day(self, day: int) -> None:
+        """Date the `llm_calls` rows logged before `decide` (e.g. the Event Interpreter's)."""
+        self._day = day
+
+    def on_rejections(self, day: int, rejections: list[c.LeverRejection]) -> None:
+        """Engine hook: the twin rejected some of `day`'s levers. Undo their run-state effects
+        (standing budget/order, pause, overtime used) and brief them at the next standup."""
+        if not rejections:
+            return
+        rec = self._applied.get(day)
+        if rec is not None:
+            before, levers = rec
+            remaining = list(levers)
+            for rj in rejections:
+                k = _lever_key(rj.lever)
+                i = next((i for i, lv in enumerate(remaining) if _lever_key(lv) == k), None)
+                if i is not None:
+                    del remaining[i]
+            self._set_run_state(before)
+            self._apply_run_state(day, remaining)
+        for rj in rejections:
+            self.pending_rejections.append(f"rejected by floor: {rj.lever.kind} — {self._scrub(rj.reason)}"[:300])
+
+    def snapshot_state(self) -> dict:
+        """The org's run state, JSON-safe, for the engine's daily snapshot (`payload["org_state"]`).
+
+        Shape (version 1):
+            {"version": 1, "standing_budget": int, "standing_order": str, "paused_until": int,
+             "overtime_used": {"<week index>": hours}, "present": [role ids],
+             "quiet_streak": {role: int}, "stances": {role: [[day, option_id, stance, line], ...]},
+             "agreements": [str], "meetings_held": int, "pending_rejections": [str],
+             "pending_drift": [str], "last_ref": WhatIf json | None, "last_ref_day": int | None,
+             "evidence_rows": [EvidenceRow fields as dicts, last 5]}
+        """
+        return {
+            "version": 1,
+            "standing_budget": int(self.standing_budget),
+            "standing_order": self.standing_order,
+            "paused_until": int(self.paused_until),
+            "overtime_used": {str(k): float(v) for k, v in self.overtime_used.items()},
+            "present": sorted(self.present),
+            "quiet_streak": {k: int(v) for k, v in sorted(self.quiet_streak.items())},
+            "stances": {r: [list(x) for x in self.stances.get(r)] for r in sorted(self.stances.by_role)},
+            "agreements": list(self.agreements),
+            "meetings_held": int(self.meetings_held),
+            "pending_rejections": list(self.pending_rejections),
+            "pending_drift": [self._flag_text(f) for f in self.pending_drift],
+            "last_ref": self.last_ref.model_dump(mode="json") if self.last_ref is not None else None,
+            "last_ref_day": self.last_ref_day,
+            "evidence_rows": [asdict(r) for r in self.evidence_rows[-5:]],
+        }
+
+    def restore(self, payload: dict, forced: Decision | None = None) -> None:
+        """Engine hook on a fork, after the snapshot is loaded. `payload["hires"]` (unreleased hire
+        rows) rebuilds who is present; `payload["paused_until"]` and `payload["org_state"]` (from
+        `snapshot_state`) restore the run state. `forced` (the fork-day decision the engine applies
+        instead of a meeting) goes through the same run-state updates as a committed decision."""
+        org = payload.get("org_state") or {}
+        if org:
+            self.standing_budget = int(org.get("standing_budget", self.standing_budget))
+            self.standing_order = org.get("standing_order", self.standing_order)
+            self.paused_until = int(org.get("paused_until", 0) or 0)
+            self.overtime_used = {int(k): float(v) for k, v in (org.get("overtime_used") or {}).items()}
+            self.stances = StanceMemory()
+            for r, rows in (org.get("stances") or {}).items():
+                for d, o, s, line in rows:
+                    self.stances.add(r, int(d), o, s, line)
+            self.agreements = list(org.get("agreements") or [])
+            self.meetings_held = int(org.get("meetings_held", 0) or 0)
+            self.pending_rejections = list(org.get("pending_rejections") or [])
+            self.pending_drift = list(org.get("pending_drift") or [])
+            lr = org.get("last_ref")
+            self.last_ref = WhatIf.model_validate(lr) if lr else None
+            self.last_ref_day = org.get("last_ref_day")
+            self.evidence_rows = [EvidenceRow(**r) for r in (org.get("evidence_rows") or [])]
+        self.paused_until = max(self.paused_until, int(payload.get("paused_until", 0) or 0))
+        hires = payload.get("hires")
+        if hires is not None:
+            hired = {h.get("role") for h in hires if isinstance(h, dict) and h.get("released_day") is None}
+            self.present = set(self.always) | {r for r in hired if r in self.roles}
+        elif org.get("present"):
+            self.present = set(self.always) | {r for r in org["present"] if r in self.roles}
+        streak = org.get("quiet_streak") or {}
+        self.quiet_streak = {r: int(streak.get(r, 0)) for r in sorted(self.present - self.always)}
+        if forced is not None:
+            self._day = forced.day
+            self._apply_run_state(forced.day, list(forced.levers))
+
     def _on_call(self, row: dict) -> None:
         try:
-            self.store.write_llm_call(row, day=self._day)
+            day = row.get("day") if isinstance(row, dict) else None
+            self.store.write_llm_call(row, day=day if day is not None else self._day)
         except Exception:  # noqa: BLE001 - logging must never break a meeting
             log.exception("could not log llm call")
+
+    # ================================================================== run state
+    def _run_state(self) -> dict:
+        return {"standing_budget": self.standing_budget, "standing_order": self.standing_order,
+                "paused_until": self.paused_until, "overtime_used": dict(self.overtime_used)}
+
+    def _set_run_state(self, s: dict) -> None:
+        self.standing_budget, self.standing_order = s["standing_budget"], s["standing_order"]
+        self.paused_until, self.overtime_used = s["paused_until"], dict(s["overtime_used"])
+
+    def _apply_run_state(self, day: int, levers: list[c.Lever]) -> None:
+        """Standing plan, pause and overtime-used updates for levers issued on `day` (kept so
+        `on_rejections` can undo them)."""
+        self._applied = {d: v for d, v in self._applied.items() if d >= day - 1}
+        self._applied[day] = (self._run_state(), list(levers))
+        for lv in levers:
+            if lv.kind == "reslot_tonight":
+                self.standing_budget, self.standing_order = lv.n_moves, lv.order
+            elif lv.kind == "pause_reslot":
+                self.paused_until = max(self.paused_until, day + lv.days - 1)
+            elif lv.kind == "overtime":
+                wk = (day - 1) // 7
+                self.overtime_used[wk] = self.overtime_used.get(wk, 0.0) + lv.hours
+
+    # ================================================================== ids and what-ifs
+    def _h(self, day: int) -> int:
+        """What-if horizon: HORIZON days, never past the scenario's last day."""
+        return max(1, min(HORIZON, self.scenario_end - day + 1))
+
+    def _whatif(self, twin: Any, state: Any, levers: list[c.Lever], events: list[Event]) -> WhatIf:
+        n = self._wn
+        self._wn += 1
+        did = f"whatif:{self.run_id}:{self._day}:{n}"
+        return twin.whatif(state, [lv.model_copy(update={"decision_id": did}) for lv in levers],
+                           self._h(self._day), events)
+
+    def _scrub(self, text: Any) -> str:
+        """Drop run-scoped id prefixes from free text that goes into prompts."""
+        return str(text).replace(f"{self.run_id}-", "").replace(f"{self.run_id}:", "")
+
+    def _disp_opt(self, oid: str | None) -> str:
+        prefix = f"{self._m.meeting_id}-"
+        return oid[len(prefix):] if oid and oid.startswith(prefix) else (oid or "")
+
+    def _store_opt(self, s: str | None) -> str | None:
+        if s is None:
+            return None
+        t = s.strip().strip("`")
+        return f"{self._m.meeting_id}-{t}" if re.fullmatch(r"o\d+", t) else t
+
+    def _disp_ev(self, eid: str | None) -> str:
+        prefix = f"ev-{self.run_id}-"
+        return "ev" + eid[len(prefix):] if eid and eid.startswith(prefix) else (eid or "")
+
+    def _store_ev(self, s: str) -> str:
+        t = str(s).strip().strip("`")
+        mt = re.fullmatch(r"ev(\d+)-(\d+)", t)
+        return f"ev-{self.run_id}-{mt.group(1)}-{mt.group(2)}" if mt else t
+
+    def _norm_pos(self, p: Position) -> Position:
+        """A position as the model wrote it (display ids) -> store ids."""
+        return p.model_copy(update={"option_id": self._store_opt(p.option_id) or "",
+                                    "evidence_ids": [self._store_ev(e) for e in p.evidence_ids]})
 
     # ================================================================== LLM plumbing
     def _ask(self, role_id: str, schema: type[BaseModel], task: str, fallback: BaseModel, *,
@@ -253,9 +438,14 @@ class OrgPolicy:
         msgs = build_messages(self._prompts[role_id], select_rules(self.playbook_rules, role_id, self._tags),
                               board_text if board_text is not None else snapshot_text(self.board),
                               task + ("\n\n" + memory if memory else ""))
-        out, meta = self.llm.complete(tier_for(tier or role.model_tier), msgs, schema, role=role_id,
-                                      run_id=self.run_id, reasoning=reasoning, max_tokens=max_tokens,
-                                      fallback=fallback)
+        t = tier_for(tier or role.model_tier)
+        try:
+            out, meta = self.llm.complete(t, msgs, schema, role=role_id, run_id=self.run_id, reasoning=reasoning,
+                                          max_tokens=max_tokens, fallback=fallback)
+        except Exception as e:  # noqa: BLE001 - a transport error must never crash a run
+            log.warning("%s: llm transport error %s; using fallback", role_id, type(e).__name__)
+            self._log_transport(role_id, t, e)
+            return fallback
         with self._lock:
             self.llm_calls += 1
             self.llm_usd += float(getattr(meta, "usd", 0.0) or 0.0)
@@ -264,6 +454,19 @@ class OrgPolicy:
             log.warning("%s returned %s, expected %s; using fallback", role_id, type(out).__name__, schema.__name__)
             return fallback
         return out
+
+    def _log_transport(self, role_id: str, tier: str, e: Exception) -> None:
+        row = {"call_id": uuid.uuid4().hex, "run_id": self.run_id, "day": self._day, "role": role_id,
+               "model": "(transport)", "request": {"error": type(e).__name__, "tier": tier},
+               "response": {"llm_fallback": True, "error": f"{type(e).__name__}: {e}"[:500]}, "usd": 0.0,
+               "kind": "llm_fallback", "fallback_used": True}
+        sink = getattr(self.llm, "on_call", None)
+        if not callable(sink):
+            sink = self._on_call
+        try:
+            sink(row)
+        except Exception:  # noqa: BLE001
+            log.exception("could not log transport fallback")
 
     def _log_fallback(self, role_id: str, reason: str) -> None:
         """An llm_fallback row for a code-level fallback (e.g. a position that never cited evidence)."""
@@ -313,6 +516,10 @@ class OrgPolicy:
         self._day = day
         m = self._m = _Meeting(day=day, meeting_id=f"{self.run_id}-m{day}")
         self._evn = 0
+        self._wn = 0
+        self._amendments = 0
+        self._lock_reruns = 0
+        self._twin, self._state = twin, state
         self.last_spec_hashes = []
         self.last_deviates = False
 
@@ -322,20 +529,23 @@ class OrgPolicy:
                             key=lambda e: (e.day, e.kind, e.event_id))
         kinds = sorted({e.kind for e in new_events})
         consequences = [e for e in events if e.source == "consequence" and e.day == day]
-        violations = self._violations(yesterday)
+        violations = self._violations(yesterday, day)
         drift_flags, self.pending_drift = list(self.pending_drift), []
-        drift = [self._flag_text(f) for f in drift_flags]
-        inbox = [f"{e.kind} {e.args}" for e in new_events if e.source == "inbox"] + list(self.pending_inbox)
-        self.pending_inbox = []
+        drift = [self._scrub(self._flag_text(f)) for f in drift_flags]
+        parsed_inbox = [f"{e.kind} {e.args}" for e in new_events if e.source == "inbox"]
+        unparsed, self.pending_inbox = [str(t) for t in self.pending_inbox], []
+        inbox = parsed_inbox + unparsed
+        rejected, self.pending_rejections = list(self.pending_rejections), []
         self._tags = set(kinds) | set(violations) | {getattr(f, "kind", str(f)) for f in drift_flags}
 
         # ---- 2. TRIAGE (code): hiring, then quiet-day check
         kpis_y = yesterday.model_dump(exclude={"mispick_rate_by_customer"}) if yesterday else {}
         fired = hire_triggers(self.roles, kinds, kpis_y)
         hires_today = self._code_hiring(day, fired)
-        quiet = not (new_events or consequences or drift or inbox or violations)
+        quiet = not (new_events or consequences or drift or inbox or violations or rejected)
         self._view, self._events, self._yday, self._pred = view, events, yesterday, predicted
-        self._inbox, self._drift, self._hires_today = inbox, drift, hires_today
+        self._inbox, self._drift, self._hires_today = parsed_inbox, drift, hires_today
+        self._unparsed, self._rejected = unparsed, rejected
         self._refresh_board()
         if quiet:
             return self._quiet_day(day, view, events, twin, state)
@@ -362,7 +572,8 @@ class OrgPolicy:
         self._propose(day)
 
         # ---- 4. EVIDENCE (Paige: code + whatif)
-        m.ref = twin.whatif(state, [], HORIZON, events)
+        m.ref = self._whatif(twin, state, [], events)
+        self.last_ref, self.last_ref_day = m.ref, day
         m.ref_id = self._write_evidence("do nothing (REF)", [], m.ref, None)
         for o in m.active():
             self._run_evidence(o, twin, state, events)
@@ -386,7 +597,7 @@ class OrgPolicy:
         for o in m.active():
             if o.score is None and o.whatif is not None:
                 o.score = score_whatif(o.whatif, m.ref, self.profile)
-                o.feas = feasibility(o.whatif, self.profile)
+                o.feas = feasibility(o.whatif, self.profile, m.ref)
             self._update_option(o, score=o.score.total if o.score else None, feasible=o.feasible,
                                 vetoed_by=o.vetoed_by, levers=o.levers, evidence_id=o.evidence_id)
 
@@ -416,20 +627,41 @@ class OrgPolicy:
         p = Kpis.model_validate(r["predicted"]) if r.get("predicted") else None
         return k, p
 
-    def _violations(self, k: Kpis | None) -> list[str]:
+    def _ref_for(self, day: int) -> Kpis | None:
+        """The do-nothing REF forecast for `day` (from the latest REF what-if run on or before it)."""
+        r, d0 = self.last_ref, self.last_ref_day
+        if r is None or d0 is None or not r.kpis_by_day or day < d0:
+            return None
+        return r.kpis_by_day[min(day - d0, len(r.kpis_by_day) - 1)]
+
+    def _violations(self, k: Kpis | None, day: int | None = None) -> list[str]:
+        """Yesterday's KPIs out of band, relative to the do-nothing REF forecast for yesterday (so
+        the twin's own magnitudes do not make every day a meeting); the profile targets when no
+        REF exists yet. Safety stays absolute (> 1.0 is risk)."""
         if k is None:
             return []
         t = self.profile.targets
+        ref = self._ref_for((day if day is not None else self._day) - 1)
+        on_time_t = t.get("on_time_pct", 97.0)
+        mispick_t = t.get("mispick_rate", 0.5)
         out = []
-        if k.on_time_pct < t.get("on_time_pct", 97.0) - 2:
+        if ref is None:
+            on_time_bar, mispick_bar, pm_bar = on_time_t - 2, mispick_t, 1.0
+            stockout_bar = 0.01 * k.lines
+        else:
+            on_time_bar = ref.on_time_pct - 2
+            mispick_bar = max(mispick_t, ref.mispick_rate * 1.25)
+            pm_bar = max(1.0, ref.pm_peak_zone_load)
+            stockout_bar = max(0.01 * k.lines, ref.stockout_lines * 1.5)
+        if k.on_time_pct < on_time_bar:
             out.append("on_time_pct")
-        if k.mispick_rate > t.get("mispick_rate", 0.5):
+        if k.mispick_rate > mispick_bar:
             out.append("mispick_rate")
-        if k.pm_peak_zone_load > 1.0:
+        if k.pm_peak_zone_load > pm_bar:
             out.append("pm_peak_zone_load")
         if k.safety_risk_max > 1.0:
             out.append("safety_risk_max")
-        if k.stockout_lines > 0.01 * k.lines:
+        if k.stockout_lines > stockout_bar:
             out.append("stockout_lines")
         return out
 
@@ -454,7 +686,8 @@ class OrgPolicy:
             hard_limits=dict(self.profile.hard_limits), events=[(e.kind, e.day, dict(e.args)) for e in evs],
             constraints=constraints, agreements=list(self.agreements), evidence=list(self.evidence_rows),
             inbox=list(self._inbox), present={r: self.roles[r].name for r in sorted(self.present)},
-            drift=list(self._drift), hires_today=list(self._hires_today))
+            drift=list(self._drift), hires_today=list(self._hires_today), run_id=self.run_id,
+            unparsed_inbox=[self._scrub(t) for t in self._unparsed], rejected=list(self._rejected))
 
     # ================================================================== hiring
     def _hire(self, day: int, role_id: str, trigger: str) -> None:
@@ -491,11 +724,11 @@ class OrgPolicy:
                                                                  order=self.standing_order)]
         plan = "reslot paused (pause in force)" if paused else \
             f"reslot {self.standing_budget} moves tonight by {self.standing_order}"
-        whatif = twin.whatif(state, levers, HORIZON, events)
+        whatif = self._whatif(twin, state, levers, events)
         ev_id = self._write_evidence("standing plan", levers, whatif, None)
         self._refresh_board()
         task = (f"Quiet day: no new events, no consequences, no drift flags, no inbox, yesterday's KPIs in band. "
-                f"The standing plan continues: {plan} (evidence `{ev_id}`). Write Megan's one-line standup "
+                f"The standing plan continues: {plan} (evidence `{self._disp_ev(ev_id)}`). Write Megan's one-line standup "
                 'note (25 words or fewer). Reply JSON {"text": "..."}.')
         note = self._ask(self.chair_id, Note, task, Note(text=f"Quiet day; standing plan continues: {plan}."),
                          tier="nano")
@@ -508,6 +741,7 @@ class OrgPolicy:
                             constraints=[], decided_by=self.chair_id, rationale=text, option_id=None,
                             meeting_id=m.meeting_id)
         self._attach(decision, whatif, False)
+        self._apply_run_state(day, list(decision.levers))
         return decision
 
     # ================================================================== store helpers
@@ -528,10 +762,11 @@ class OrgPolicy:
         self._evn += 1
         h = spec_hash(levers, m.day)
         sc = score_whatif(whatif, m.ref, self.profile) if m.ref is not None else None
-        fe = feasibility(whatif, self.profile)
+        fe = feasibility(whatif, self.profile, m.ref)
+        hz = self._h(m.day)
         self.store.write_evidence(
-            self.run_id, ev_id, h, {"label": label, "option_id": option_id, "levers": levers, "horizon": HORIZON},
-            HORIZON, whatif.kpis_total,
+            self.run_id, ev_id, h, {"label": label, "option_id": option_id, "levers": levers, "horizon": hz},
+            hz, whatif.kpis_total,
             scorecard={"score": sc.total if sc else None, "terms": sc.terms if sc else None,
                        "feasible": fe.feasible, "breaches": fe.breaches,
                        "expected_near_misses": whatif.expected_near_misses,
@@ -539,15 +774,16 @@ class OrgPolicy:
             created_day=m.day)
         self.last_spec_hashes.append(h)
         self.known_evidence.add(ev_id)
-        self.evidence_rows.append(EvidenceRow.from_kpis(ev_id, label, whatif.kpis_total, whatif.expected_near_misses))
+        self.evidence_rows.append(EvidenceRow.from_kpis(self._disp_ev(ev_id), label, whatif.kpis_total,
+                                                        whatif.expected_near_misses))
         return ev_id
 
     def _run_evidence(self, o: Option, twin: Any, state: Any, events: list[Event]) -> None:
-        o.whatif = twin.whatif(state, list(o.levers), HORIZON, events)
-        o.evidence_id = self._write_evidence(f"{o.option_id.rsplit('-', 1)[-1]} {o.label}", o.levers, o.whatif,
+        o.whatif = self._whatif(twin, state, list(o.levers), events)
+        o.evidence_id = self._write_evidence(f"{self._disp_opt(o.option_id)} {o.label}", o.levers, o.whatif,
                                              o.option_id)
         o.score = score_whatif(o.whatif, self._m.ref, self.profile)
-        o.feas = feasibility(o.whatif, self.profile)
+        o.feas = feasibility(o.whatif, self.profile, self._m.ref)
         self._update_option(o, evidence_id=o.evidence_id, score=o.score.total, feasible=o.feas.feasible)
 
     # ================================================================== propose
@@ -573,7 +809,7 @@ class OrgPolicy:
 
         alts = [r for r in ("ops_manager", "safety", "quality") if r in self.present and r in self.roles]
         first = self._m.active()[0] if self._m.active() else None
-        tabled = (f"The engineer tabled `{first.option_id}` {first.label}: "
+        tabled = (f"The engineer tabled `{self._disp_opt(first.option_id)}` {first.label}: "
                   + ", ".join(lever_str(lv) for lv in first.levers)) if first else "No option tabled yet."
 
         def ask_alt(rid: str) -> MaybeProposal:
@@ -625,13 +861,13 @@ class OrgPolicy:
     # ================================================================== positions
     def _options_text(self, with_scores: bool = False) -> str:
         m = self._m
-        lines = [f"REF `{m.ref_id}`: do nothing (the reference every option is scored against)"]
+        lines = [f"REF `{self._disp_ev(m.ref_id)}`: do nothing (the reference every option is scored against)"]
         for o in m.active():
             k = o.whatif.kpis_total if o.whatif else None
-            s = (f"- `{o.option_id}` \"{o.label}\" by {self.roles[o.proposed_by].name}: "
+            s = (f"- `{self._disp_opt(o.option_id)}` \"{o.label}\" by {self.roles[o.proposed_by].name}: "
                  + ", ".join(lever_str(lv) for lv in o.levers))
             if k is not None:
-                s += (f" | evidence `{o.evidence_id}`: on_time {k.on_time_pct:.1f}%, mispick {k.mispick_rate:.2f}%, "
+                s += (f" | evidence `{self._disp_ev(o.evidence_id)}`: on_time {k.on_time_pct:.1f}%, mispick {k.mispick_rate:.2f}%, "
                       f"lph {k.lph:.1f}, progress {k.reslot_progress_pct:.1f}%, cost ${k.labor_cost_usd:,.0f}, "
                       f"exp near-misses {o.whatif.expected_near_misses:.2f}, safety_risk {o.whatif.safety_risk_max:.2f}")
             s += " | feasible" if o.feasible else f" | INFEASIBLE {o.feas.breaches if o.feas else ''}"
@@ -677,8 +913,9 @@ class OrgPolicy:
         else:
             schema, wrap = Position, (lambda p: p)
             extra_help = "Reply JSON with the Position fields only."
-        known = sorted(self.known_evidence & {o.evidence_id for o in self._m.active()} | {self._m.ref_id})
-        task = (f"## Options on the table (3-day what-ifs on forecast demand)\n{self._options_text()}\n\n"
+        known = [self._disp_ev(e) for e in
+                 sorted(self.known_evidence & {o.evidence_id for o in self._m.active()} | {self._m.ref_id})]
+        task = (f"## Options on the table ({self._h(self._day)}-day what-ifs on forecast demand)\n{self._options_text()}\n\n"
                 "Give your position on the ONE option that matters most to your KPIs: "
                 '{"option_id": "...", "stance": "support|oppose|amend", "amendment": null or [levers], '
                 '"rationale": "<= 60 words", "evidence_ids": ["..."]}. '
@@ -686,16 +923,19 @@ class OrgPolicy:
                 f"{self._lever_help(role_id)}\n{extra_help}")
         fb_pos = self._fallback_position()
         out = self._ask(role_id, schema, task, wrap(fb_pos))
-        pos = out if schema is Position else out.position
+        first_lock = getattr(out, "lock", None) if schema is QualityReply else None
+        pos = self._norm_pos(out if schema is Position else out.position)
         err = self._position_error(pos)
         if err:
-            out = self._ask(role_id, schema, task + f"\n\nYour previous answer was rejected ({err}). "
+            out = self._ask(role_id, schema, task + f"\n\nYour previous answer was rejected ({self._scrub(err)}). "
                             "Cite evidence or support: use only the evidence ids listed above.", wrap(fb_pos))
-            pos = out if schema is Position else out.position
+            pos = self._norm_pos(out if schema is Position else out.position)
             err = self._position_error(pos)
             if err:
                 self._log_fallback(role_id, f"position rejected twice: {err}")
-                return role_id, fb_pos, None
+                # Quality's lock is her own authority: a valid lock survives a bad position.
+                lk = (getattr(out, "lock", None) or first_lock) if schema is QualityReply else None
+                return role_id, fb_pos, lk
         extra = getattr(out, "veto", None) if schema is SafetyReply else getattr(out, "lock", None) \
             if schema is QualityReply else None
         return role_id, pos, extra
@@ -706,9 +946,11 @@ class OrgPolicy:
         if p.stance == "amend" and p.amendment:
             text += " | amendment: " + ", ".join(lever_str(lv) for lv in p.amendment)
         self._utter(role_id, "position", text[:800], p.evidence_ids, p.option_id)
-        self.stances.add(role_id, day, p.option_id, p.stance, p.rationale)
+        self.stances.add(role_id, day, self._disp_opt(p.option_id), p.stance, p.rationale)
 
     def _handle_veto(self, role_id: str, v: Veto) -> None:
+        v = v.model_copy(update={"option_id": self._store_opt(v.option_id) or "",
+                                 "evidence_ids": [self._store_ev(e) for e in v.evidence_ids]})
         o, ref = self._m.get(v.option_id), self._m.ref
         evid = [e for e in v.evidence_ids if e in self.known_evidence]
         if o is None or o.whatif is None:
@@ -730,21 +972,35 @@ class OrgPolicy:
 
     def _handle_lock(self, role_id: str, lk: Lock) -> None:
         role = self.roles[role_id]
-        if not authority.lock_allowed(role, lk.days):
-            self._utter(role_id, "lock", f"lock {lk.target} {lk.ids} for {lk.days}d not applied: "
-                        f"locks over 3 days need the chair ({lk.reason})"[:600])
+        if role.power != "lock":
+            self._utter(role_id, "lock", f"lock {lk.target} {lk.ids} not applied: {role_id} has no lock power")
+            return
+        days = lk.days
+        if days > LOCK_MAX_DAYS:  # her own authority covers 3 days: clamp, still apply
+            days = LOCK_MAX_DAYS
+            self._utter(role_id, "lock", f"lock clamped to {LOCK_MAX_DAYS} days (Quality alone)")
+        if not authority.lock_allowed(role, days):
+            self._utter(role_id, "lock", f"lock {lk.target} {lk.ids} for {days}d not applied ({lk.reason})"[:600])
             return
         try:
-            pr = Protect(target=lk.target, ids=[str(i) for i in lk.ids], days=lk.days)
+            pr = Protect(target=lk.target, ids=[str(i) for i in lk.ids], days=days)
         except ValidationError as e:
             self._utter(role_id, "lock", f"lock not applied: invalid ({str(e)[:200]})")
             return
         self._m.lock_levers.append(pr)
+        changed = []
         for o in self._m.active():
             if pr not in o.levers:
                 o.levers = list(o.levers) + [pr]
                 self._update_option(o, levers=o.levers)
-        self._utter(role_id, "lock", f"lock {lk.target} {', '.join(pr.ids)} for {lk.days}d: {lk.reason}"[:600])
+                changed.append(o)
+        self._utter(role_id, "lock", f"lock {lk.target} {', '.join(pr.ids)} for {days}d: {lk.reason}"[:600])
+        # Re-run the evidence so `predicted` and the scores include the Protect lever (<= 3 what-ifs).
+        for o in changed:
+            if self._lock_reruns >= MAX_OPTIONS or self._twin is None:
+                break
+            self._lock_reruns += 1
+            self._run_evidence(o, self._twin, self._state, self._events)
 
     # ================================================================== amend
     @staticmethod
@@ -777,6 +1033,11 @@ class OrgPolicy:
             levers = self._merge(base.levers, kept)
             if any(spec_hash(o.levers, m.day) == spec_hash(levers, m.day) for o in m.active()):
                 continue
+            if self._amendments >= MAX_AMENDMENTS:
+                self._utter(role_id, "question", f"amendment dropped: cap {MAX_AMENDMENTS} amendments per meeting",
+                            option_id=base.option_id)
+                continue
+            self._amendments += 1
             if len(m.active()) >= MAX_OPTIONS:
                 victims = [o for o in m.active() if o.proposed_by != self.engineer_id and o not in created]
                 if not victims:
@@ -811,7 +1072,7 @@ class OrgPolicy:
 
     # ================================================================== decide
     def _positions_text(self) -> str:
-        rows = [f"- {self.roles[r].name} ({r}): {p.stance} {p.option_id} - {p.rationale[:160]}"
+        rows = [f"- {self.roles[r].name} ({r}): {p.stance} {self._disp_opt(p.option_id)} - {p.rationale[:160]}"
                 for r, p in sorted(self._m.positions.items())]
         return "\n".join(rows) or "- (none)"
 
@@ -824,7 +1085,7 @@ class OrgPolicy:
         top = ranked[0] if ranked else None
         pause = next((o for o in act if o.levers and all(lv.kind == "pause_reslot" for lv in o.levers)), None)
         fb_opt = pause or top or (act[0] if act else None)
-        task = (f"## Options (code-computed scores under profile {self.profile.id}; 3-day what-ifs)\n"
+        task = (f"## Options (code-computed scores under profile {self.profile.id}; {self._h(day)}-day what-ifs)\n"
                 f"{self._options_text(with_scores=True)}\n\n## Positions\n{self._positions_text()}\n\n"
                 "Pick one option. Rules: a vetoed or infeasible option cannot be chosen; picking a feasible option "
                 "other than the top score needs a rationale (logged as a deviation); escalate to the Director when "
@@ -834,6 +1095,8 @@ class OrgPolicy:
                            rationale="(fallback) pause reslot" if fb_opt is pause and pause else "(fallback)",
                            evidence_ids=[fb_opt.evidence_id] if fb_opt and fb_opt.evidence_id else [])
         dec = self._ask(self.chair_id, ChairDecision, task, fb, tier="ultra", reasoning=True, max_tokens=1500)
+        dec = dec.model_copy(update={"option_id": self._store_opt(dec.option_id),
+                                     "evidence_ids": [self._store_ev(e) for e in dec.evidence_ids]})
         rationale = (dec.rationale or "").strip()
         reasons: list[str] = []
         deviates = False
@@ -879,7 +1142,7 @@ class OrgPolicy:
         self._hire(day, dir_id, trigger)
         self._refresh_board()
         locks = ", ".join(lever_str(lv) for lv in m.lock_levers) or "none"
-        task = (f"## Escalation\nReasons: {'; '.join(reasons)}\nChair's provisional choice: {chosen.option_id} "
+        task = (f"## Escalation\nReasons: {'; '.join(reasons)}\nChair's provisional choice: {self._disp_opt(chosen.option_id)} "
                 f"({rationale})\nQuality locks in force: {locks}\n\n## Options\n{self._options_text(with_scores=True)}"
                 f"\n\n## Positions\n{self._positions_text()}\n\nRule on it. You may choose any option (you may override a "
                 "veto), override a lock, or set the profile (customer_first | efficiency_first). "
@@ -887,6 +1150,7 @@ class OrgPolicy:
         fb = DirectorRuling(option_id=chosen.option_id, set_profile=None, override_lock=None,
                             rationale="(fallback) the chair's choice stands")
         ruling = self._ask(dir_id, DirectorRuling, task, fb, tier="ultra", reasoning=True, max_tokens=1500)
+        ruling = ruling.model_copy(update={"option_id": self._store_opt(ruling.option_id)})
         pick = m.get(ruling.option_id) if ruling.option_id else None
         if ruling.option_id and pick is None:
             self._utter(dir_id, "question", f"ruling names unknown option {ruling.option_id}; chair's choice stands")
@@ -925,7 +1189,7 @@ class OrgPolicy:
             mine = [lv for lv in levers
                     if authority.issuer_for(lv, self.roles, self.present, rem).needs_hire == rid]
             self._hire(day, rid, "commit: issue " + ", ".join(sorted({lv.kind for lv in mine})))
-            task = (f"The chair approved {chosen.option_id} \"{chosen.label}\". You are asked to issue: "
+            task = (f"The chair approved {self._disp_opt(chosen.option_id)} \"{chosen.label}\". You are asked to issue: "
                     + ", ".join(lever_str(lv) for lv in mine)
                     + '. Accept or refuse with a reason. Reply JSON {"accept": true|false, "reason": "..."}.')
             acc = self._ask(rid, Accept, task, Accept(accept=True, reason="(fallback) accepted"))
@@ -956,15 +1220,7 @@ class OrgPolicy:
             outcome += " [deviates from top score]"
         self.store.set_meeting_outcome(self.run_id, m.meeting_id, outcome[:1000])
 
-        # run-state updates
-        for lv in final:
-            if lv.kind == "reslot_tonight":
-                self.standing_budget, self.standing_order = lv.n_moves, lv.order
-            elif lv.kind == "pause_reslot":
-                self.paused_until = max(self.paused_until, day + lv.days - 1)
-            elif lv.kind == "overtime":
-                wk = (day - 1) // 7
-                self.overtime_used[wk] = self.overtime_used.get(wk, 0.0) + lv.hours
+        self._apply_run_state(day, stamped)
         return decision
 
     def _attach(self, decision: Decision, whatif: WhatIf | None, deviates: bool) -> None:
@@ -981,6 +1237,7 @@ class OrgPolicy:
         items = [f"{e.kind} (day {e.day})" for e in new_events]
         items += [f"KPI out of band: {v}" for v in violations] + [f"drift: {d}" for d in drift]
         items += [f"inbox: {t[:80]}" for t in inbox]
+        items += [t[:100] for t in self._rejected]
         return items[:6] or ["review standing plan"]
 
     def _triage_task(self, new_events, violations, drift, inbox, fired) -> str:
@@ -989,7 +1246,9 @@ class OrgPolicy:
         return ("Not a quiet day. Signals:\n"
                 f"- new or announced events: {', '.join(f'{e.kind} day {e.day} {e.args}' for e in new_events) or 'none'}\n"
                 f"- yesterday KPIs out of band: {', '.join(violations) or 'none'}\n"
-                f"- drift flags: {'; '.join(drift) or 'none'}\n- inbox: {'; '.join(inbox) or 'none'}\n"
+                f"- drift flags: {'; '.join(drift) or 'none'}\n- inbox: {'; '.join(self._scrub(t) for t in inbox) or 'none'}\n"
+                f"- floor rejections: {'; '.join(self._rejected) or 'none'}\n"
+
                 f"- code hired on triggers: {', '.join(f'{r} ({t})' for r, t in sorted(fired.items())) or 'none'}\n"
                 f"- on-call roles you may also call in: {', '.join(callable_roles) or 'none'}\n\n"
                 "Set the agenda (at most 4 short items). "

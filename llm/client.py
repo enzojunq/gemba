@@ -91,6 +91,19 @@ def _is_format_rejection(e: Exception) -> bool:
     return isinstance(e, openai.APIStatusError) and e.status_code in (400, 404, 415, 422)
 
 
+DEFAULT_TIMEOUT_S = 20.0
+DEFAULT_MAX_RETRIES = 1
+
+
+def client_options() -> dict:
+    """OpenAI client timeout / retries: short by default so a hung endpoint costs one standup
+    seconds, not minutes (callers fall back). Override with $LLM_TIMEOUT_S / $LLM_MAX_RETRIES."""
+    t = (os.environ.get("LLM_TIMEOUT_S") or "").strip()
+    r = (os.environ.get("LLM_MAX_RETRIES") or "").strip()
+    return {"timeout": float(t) if t else DEFAULT_TIMEOUT_S,
+            "max_retries": int(r) if r else DEFAULT_MAX_RETRIES}
+
+
 class LLM:
     _mode_by_model: dict[str, Mode] = {}  # process-wide memory of which structured-output mode worked
 
@@ -101,7 +114,7 @@ class LLM:
         self.client = client or openai.OpenAI(
             api_key=os.environ.get("CRUSOE_API_KEY") or "unset",
             base_url=(os.environ.get("CRUSOE_BASE_URL") or "").strip() or None,
-            max_retries=2, timeout=120)
+            **client_options())
 
     def mode_for(self, model: str) -> Mode | None:
         return self._mode_by_model.get(model)

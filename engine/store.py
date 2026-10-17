@@ -6,7 +6,10 @@ Every insert carrying `caused_by` also writes a `cascade_edges` row (spec 9.4).
 Additions beyond spec 8.2 (all nullable, needed by the engine): `day_results.snapshot_path`
 (CONTRACT 7), `day_results.violations`, `decisions.rejections` (twin LeverRejections),
 `cascade_edges.day` and `llm_calls.day` (so forks can copy rows "before fork_day"),
-`llm_calls.kind/fallback_used/mode` (emitted by llm/client.py).
+`llm_calls.kind/fallback_used/mode` (emitted by llm/client.py), `runs.twin` (the twin class
+the run used, so a StubTwin run is never mistaken for a real one) and `runs.error` (repr of
+the exception of a failed run). `create_schema` adds missing nullable columns to an existing
+database, so an old `runs.db` keeps working.
 """
 
 from __future__ import annotations
@@ -39,6 +42,14 @@ def dumps(x: Any) -> str | None:
             return o.model_dump(mode="json")
         if isinstance(o, (set, tuple)):
             return list(o)
+        if isinstance(o, datetime):
+            return o.isoformat()
+        if hasattr(o, "tolist") and getattr(o, "ndim", 0) > 0:  # numpy arrays (.item() needs size 1)
+            return o.tolist()
+        if hasattr(o, "item"):  # numpy scalars (int64, float32, bool_)
+            return o.item()
+        if hasattr(o, "tolist"):
+            return o.tolist()
         raise TypeError(f"not JSON serializable: {type(o).__name__}")
 
     return json.dumps(x, default=default)
@@ -71,7 +82,7 @@ runs = _t("runs",
     Column("fork_decision", J), Column("scenario_id", String), Column("profile_id", String),
     Column("playbook_version", String), Column("org_spec_hash", String), Column("seed", Integer),
     Column("mode", String), Column("status", String), Column("started_at", String),
-    Column("finished_at", String), Column("llm_usd", Float))
+    Column("finished_at", String), Column("llm_usd", Float), Column("twin", String), Column("error", Text))
 day_results = _t("day_results",
     Column("run_id", String, primary_key=True), Column("day", Integer, primary_key=True),
     Column("kpis", J), Column("hourly", J), Column("predicted", J), Column("violations", J),
@@ -185,6 +196,19 @@ class RunStore:
 
     def create_schema(self) -> None:
         md.create_all(self.engine)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Additive migration: nullable columns added after a database was created."""
+        from sqlalchemy import inspect as sa_inspect
+        insp = sa_inspect(self.engine)
+        with self.engine.begin() as conn:
+            for table in md.sorted_tables:
+                have = {col["name"] for col in insp.get_columns(table.name)}
+                for col in table.columns:
+                    if col.name not in have:
+                        typ = col.type.compile(dialect=self.engine.dialect)
+                        conn.exec_driver_sql(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {typ}')
 
     # ------------------------------------------------------------------ internals
     def _tx(self, conn: Connection | None):
@@ -224,10 +248,17 @@ class RunStore:
         with self.engine.begin() as conn:
             conn.execute(update(runs).where(runs.c.run_id == run_id).values(status=status))
 
-    def finish_run(self, run_id: str, status: str = "done", llm_usd: float | None = None) -> None:
+    def set_twin(self, run_id: str, twin: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(update(runs).where(runs.c.run_id == run_id).values(twin=twin))
+
+    def finish_run(self, run_id: str, status: str = "done", llm_usd: float | None = None,
+                   error: str | None = None) -> None:
         vals: dict = dict(status=status, finished_at=_now())
         if llm_usd is not None:
             vals["llm_usd"] = llm_usd
+        if error is not None:
+            vals["error"] = error[:500]
         with self.engine.begin() as conn:
             conn.execute(update(runs).where(runs.c.run_id == run_id).values(**vals))
 
@@ -407,6 +438,11 @@ class RunStore:
         rows = self._all(select(runs).where(runs.c.run_id == run_id))
         return rows[0] if rows else None
 
+    def run_error(self, run_id: str) -> str | None:
+        """Why a failed run failed (repr of the exception, <= 500 chars), else None."""
+        r = self.get_run(run_id)
+        return None if r is None else r.get("error")
+
     def list_runs(self, mode: str | None = None) -> list[dict]:
         stmt = select(runs).order_by(runs.c.started_at.desc())
         return self._all(stmt.where(runs.c.mode == mode) if mode else stmt)
@@ -504,6 +540,7 @@ class _Reuse:
 def _sqlite_pragmas(dbapi_conn, _record) -> None:
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")  # the console tails runs.db while the engine writes
+    cur.execute("PRAGMA busy_timeout=10000")  # parallel runs / the console wait up to 10 s for a lock
     cur.close()
 
 

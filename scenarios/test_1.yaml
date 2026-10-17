@@ -5,6 +5,6 @@ days: [61, 70]
 events:
   - {kind: demand_surge, day: 63, args: {family: seasonal, factor: 3, days: 3}}
   - {kind: wms_sync_delay, day: 66, args: {days: 2}}
-  - {kind: key_customer_week, day: 68, args: {customer: KEY1, days: 3}}
+  - {kind: key_customer_week, day: 68, args: {customer: C001, days: 3}}
 perturbation: {family_scale_pct: -9, seasonal_group_seed: 21, surge_shift_days: 1}
 overrides: {}

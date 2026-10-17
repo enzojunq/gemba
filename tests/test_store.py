@@ -122,3 +122,42 @@ def test_write_llm_call_accepts_client_dict(store):
     [row] = store.table("llm_calls", run_id)
     assert row["mode"] == "json_schema" and row["kind"] == "llm_call" and row["day"] == 61
     assert row["request"]["tier"] == "big"
+
+
+def test_dumps_handles_numpy_and_datetime():
+    import datetime as dt
+
+    import numpy as np
+
+    from engine.store import dumps, loads
+    out = loads(dumps({"i": np.int64(3), "f": np.float32(0.5), "b": np.bool_(True), "a": np.arange(3),
+                       "t": dt.datetime(2026, 1, 2, 3, 4, 5)}))
+    assert out == {"i": 3, "f": 0.5, "b": True, "a": [0, 1, 2], "t": "2026-01-02T03:04:05"}
+
+
+def test_sqlite_busy_timeout_and_wal(store):
+    with store.engine.connect() as conn:
+        assert conn.exec_driver_sql("PRAGMA busy_timeout").scalar() == 10000
+        assert conn.exec_driver_sql("PRAGMA journal_mode").scalar().lower() == "wal"
+
+
+def test_runs_twin_and_error_columns(store):
+    rid = store.create_run("backtest", "s", "p", "v0", 1)
+    store.set_twin(rid, "StubTwin")
+    store.finish_run(rid, "failed", error="RuntimeError('x')" + "y" * 600)
+    r = store.get_run(rid)
+    assert r["twin"] == "StubTwin" and r["status"] == "failed" and len(r["error"]) == 500
+    assert store.run_error(rid) == r["error"] and store.run_error("nope") is None
+
+
+def test_create_schema_adds_new_columns_to_old_db(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, status TEXT)")
+    con.commit()
+    con.close()
+    s = RunStore(f"sqlite:///{path}")
+    s.create_schema()
+    cols = {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(runs)")}
+    assert {"twin", "error", "llm_usd", "seed"} <= cols

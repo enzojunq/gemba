@@ -64,10 +64,24 @@ class Board:
     present: dict[str, str] = field(default_factory=dict)  # role id -> name
     drift: list[str] = field(default_factory=list)
     hires_today: list[str] = field(default_factory=list)
+    run_id: str = ""
+    """Only used to strip the run-scoped prefix from ids shown on the board (the board text must
+    not contain the run id, so the LLM cache hits across runs, forks and eval)."""
+    unparsed_inbox: list[str] = field(default_factory=list)  # inbox texts the interpreter could not parse
+    rejected: list[str] = field(default_factory=list)  # "rejected by floor: <kind> — <reason>"
+
+    def display_id(self, id_: str | None) -> str:
+        if not id_:
+            return "n/a"
+        if self.run_id:
+            for sep in ("-", ":"):
+                if id_.startswith(self.run_id + sep):
+                    return id_[len(self.run_id) + 1:]
+        return id_
 
     @property
     def locks(self) -> list[str]:
-        return [f"protect {p.target} {','.join(p.ids)} until day {p.until_day} ({p.decision_id or 'n/a'})"
+        return [f"protect {p.target} {','.join(p.ids)} until day {p.until_day} ({self.display_id(p.decision_id)})"
                 for p in self.view.protected]
 
 
@@ -106,6 +120,7 @@ def _render(b: Board, n_events: int, n_evidence: int, inbox_chars: int) -> str:
         out.append("**Agreements:** " + "; ".join(b.agreements))
     if b.drift:
         out.append("**Drift flags:** " + "; ".join(b.drift))
+    out += [f"- {t}" for t in b.rejected[:5]]
     ev = b.events[:n_events]
     out.append(f"**Events ({len(b.events)}):**" + ("" if ev else " none"))
     for kind, day, args in ev:
@@ -119,6 +134,9 @@ def _render(b: Board, n_events: int, n_evidence: int, inbox_chars: int) -> str:
     if b.inbox:
         out.append("**Open inbox:**")
         out += [f"- {t[:inbox_chars]}" + ("..." if len(t) > inbox_chars else "") for t in b.inbox[:5]]
+    if b.unparsed_inbox:
+        out.append("**Inbox (unparsed):**")
+        out += [f"- {t[:inbox_chars]}" + ("..." if len(t) > inbox_chars else "") for t in b.unparsed_inbox[:5]]
     return "\n".join(out)
 
 

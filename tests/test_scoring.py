@@ -123,7 +123,26 @@ def test_feasibility_pm_load(cf):
     assert ok.feasible and ok.breaches == {}
 
 
+def test_feasibility_relative_to_ref(cf):
+    def wi(risk, nm=0.1, pm=0.9):
+        return WhatIf(levers=[], days=3, kpis_by_day=[], kpis_total=Kpis(),
+                      expected_near_misses=nm, safety_risk_max=risk, pm_peak_zone_load=pm)
+
+    ref = wi(1.3)  # do-nothing already breaches safety_risk_max (limit 1.0)
+    assert not feasibility(ref, cf).feasible
+    assert feasibility(wi(1.3), cf, ref).feasible  # no worse than REF
+    assert feasibility(wi(1.1), cf, ref).feasible  # better than REF, still above the limit
+    worse = feasibility(wi(1.4), cf, ref)
+    assert not worse.feasible and worse.breaches["safety_risk_max"] == pytest.approx(0.1)
+    # a limit REF does not breach stays absolute
+    pm = feasibility(wi(1.3, pm=1.2), cf, ref)
+    assert set(pm.breaches) == {"pm_peak_zone_load"} and pm.breaches["pm_peak_zone_load"] == pytest.approx(0.1)
+    # REF under the limit: same as no REF
+    assert feasibility(wi(1.05), cf, wi(0.5)).breaches == feasibility(wi(1.05), cf).breaches
+
+
 def test_least_bad():
+
     opts = [
         Feasibility(feasible=False, breaches={"pm_peak_zone_load": 0.3}),
         Feasibility(feasible=False, breaches={"safety_risk_max": 0.05, "pm_peak_zone_load": 0.05}),

@@ -10,6 +10,13 @@ seed, so `do_nothing` always runs first for each (scenario, seed).
 Seeds: an explicit seed overrides the scenario's own seed (as `engine.run --seed` does);
 `seeds=None` runs each scenario once with the seed written in its YAML.
 
+Parallel crews: the twin is CPU-bound, so with `parallel > 1` crew runs go to a
+`ProcessPoolExecutor` (spawn-safe entry `_crew_job`, plain args only; each process opens its
+own store from the URL, builds its own twin by name and its own LLM client). That needs a
+file-backed store, a twin given by name (None/"stub"/"real"/"auto") and no in-memory `llm`
+object; otherwise (tests with fake LLMs / twin factories, `:memory:` stores) a thread pool is
+used, as before.
+
 CLI:
     python -m eval.run_eval --scenario reslot_default --profile customer_first \
         --contenders do_nothing,big_bang,static[,crew] --seeds 1 [--days 61-70] [--parallel 4] [--out eval_out.md]
@@ -18,18 +25,18 @@ CLI:
 from __future__ import annotations
 
 import argparse
-import copy
 import logging
+import multiprocessing
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from typing import Any
 
 from pydantic import BaseModel
 
 import contracts as c
 from engine import events as ev
-from engine.run import make_policy, make_twin, parse_days, run
+from engine.run import make_policy, parse_days, policy_kwargs, run, twin_factory
 from engine.store import RunStore
 from org.scoring import aggregate_run, load_profile, score_kpis
 
@@ -69,31 +76,15 @@ def parse_contender(contender: str) -> tuple[str, str | None]:
 
 
 def load_playbook_rules(version: str | None, store: RunStore) -> list[dict]:
-    """The rules of playbook `version` (v0 / None = the empty playbook). Delegates to the learn
-    lane's `learn.playbook.load_rules` when importable; else the non-retired/rejected rows."""
+    """The rules of playbook `version` (v0 / None = the empty playbook), as the org gets them
+    through `engine.run.policy_kwargs`."""
     if not version or version == "v0":
         return []
-    try:
-        from learn.playbook import load_rules
-    except ImportError:
-        load_rules = None
-    if load_rules is not None and hasattr(store, "playbook_rows"):
-        return load_rules(store, version)
-    return [r for r in store.table("playbook_rules")
-            if r.get("version") == version and r.get("status") not in ("retired", "rejected")]
+    from learn.playbook import load_rules
+    return load_rules(store, version)
 
 
-def _twin_factory(twin: Any) -> Callable[[], c.FloorTwin]:
-    """A fresh twin per run (twins hold per-run state, e.g. the seed, so they are not shared
-    across threads). `twin` may be None/"stub"/"real"/"auto", a zero-arg factory or class, or
-    an instance (deep-copied per run)."""
-    if twin is None or isinstance(twin, str):
-        return lambda: make_twin(twin)
-    if isinstance(twin, c.FloorTwin) and not isinstance(twin, type):
-        return lambda: copy.deepcopy(twin)
-    if callable(twin):
-        return twin
-    raise TypeError(f"twin must be a name, factory or FloorTwin, got {type(twin).__name__}")
+_twin_factory = twin_factory  # old name; see engine.run.twin_factory
 
 
 def _scenario(scenario_id: str, seed: int | None, days: tuple[int, int] | None) -> c.Scenario:
@@ -122,14 +113,32 @@ def run_contender(contender: str, scenario_id: str, profile_id: str, seed: int |
     profile = load_profile(profile_id)
     run_id = store.create_run("eval", sc.id, profile.id, pb, sc.seed)
     if policy_name == "org":
-        policy = make_policy("org", run_id, llm=llm, profile=profile, store=store,
-                             playbook_rules=load_playbook_rules(pb, store), seed=sc.seed)
+        policy = make_policy("org", run_id, llm=llm, **policy_kwargs(profile, store, pb, sc))
     else:
         policy = make_policy(policy_name, run_id)
-    tw = _twin_factory(twin)()
+    tw = twin_factory(twin)()
     run(sc, profile, policy, tw, playbook_version=pb or "v0", mode="eval", store=store, run_id=run_id,
         ref_kpis=ref_kpis, do_nothing_kpis=ref_kpis, snapshot_dir=snapshot_dir)
     return run_id
+
+
+def _crew_job(contender: str, scenario_id: str, profile_id: str, seed: int | None, playbook: str,
+              store_url: str, twin_name: str | None, days: tuple[int, int] | None = None,
+              ref_kpis: dict | None = None, snapshot_dir: str | None = None) -> str:
+    """Process-pool entry (spawn-safe: module level, plain picklable args). Opens its own
+    store, twin and (inside OrgPolicy) LLM client; returns the run id."""
+    store = RunStore(store_url)
+    ref = c.Kpis.model_validate(ref_kpis) if ref_kpis is not None else None
+    return run_contender(contender, scenario_id, profile_id, seed, twin=twin_name, store=store,
+                         days=tuple(days) if days else None, playbook=playbook, ref_kpis=ref,
+                         snapshot_dir=snapshot_dir)
+
+
+def _use_processes(parallel: int, n_jobs: int, store: RunStore, twin: Any, llm: Any) -> bool:
+    url = getattr(store, "url", "") or ""
+    in_memory = url.startswith("sqlite") and (":memory:" in url or url.rstrip("/") in ("sqlite:", "sqlite:/"))
+    return parallel > 1 and n_jobs > 1 and llm is None and (twin is None or isinstance(twin, str)) \
+        and not in_memory
 
 
 # --------------------------------------------------------------------------- metrics
@@ -179,8 +188,11 @@ def evaluate(scenario_ids: list[str], profile_id: str, contenders: list[str], se
              twin: Any = None, llm: Any = None, snapshot_dir: str | None = None) -> list[EvalRow]:
     """Run every (scenario, contender, seed); return one EvalRow each, also written to
     `eval_results`. Baselines run sequentially (do_nothing first, it is the REF); crew runs
-    go through a thread pool of `parallel` workers. `do_nothing` and `static` are always run
-    (REF and the "beats static" column) but only requested contenders are returned."""
+    go through a pool of `parallel` workers (processes when possible, see the module doc).
+    `do_nothing` and `static` are always run (REF and the "beats static" column) but only
+    requested contenders are returned. `twin`: a name, a factory, or a StubTwin instance
+    (deep-copied per run); see `engine.run.twin_factory`."""
+    twin_factory(twin)  # validate early (a real-twin instance is refused)
     for ct in contenders:
         parse_contender(ct)  # fail fast on a typo
     store = store or RunStore()
@@ -208,11 +220,23 @@ def evaluate(scenario_ids: list[str], profile_id: str, contenders: list[str], se
 
     if crews:
         jobs = [(sid, eff_seed[(sid, s)], ct) for sid in scenario_ids for s in seed_list for ct in crews]
-        with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
-            futs = {job: pool.submit(run_contender, job[2], job[0], profile_id, job[1],
-                                     ref_kpis=refs[(job[0], job[1])], llm=llm, **common) for job in jobs}
-            for job, f in futs.items():
-                run_ids[job] = f.result()
+        if _use_processes(parallel, len(jobs), store, twin, llm):
+            ctx = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=min(parallel, len(jobs)), mp_context=ctx) as pool:
+                futs = {}
+                for sid, seed, ct in jobs:
+                    pbv = parse_contender(ct)[1] or "v0"
+                    futs[(sid, seed, ct)] = pool.submit(
+                        _crew_job, ct, sid, profile_id, seed, pbv, store.url, twin, days,
+                        refs[(sid, seed)].model_dump(mode="json"), snapshot_dir)
+                for job, f in futs.items():
+                    run_ids[job] = f.result()
+        else:
+            with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
+                futs = {job: pool.submit(run_contender, job[2], job[0], profile_id, job[1],
+                                         ref_kpis=refs[(job[0], job[1])], llm=llm, **common) for job in jobs}
+                for job, f in futs.items():
+                    run_ids[job] = f.result()
 
     metrics = {k: run_metrics(store, rid, refs[(k[0], k[1])], profile) for k, rid in run_ids.items()}
     rows: list[EvalRow] = []

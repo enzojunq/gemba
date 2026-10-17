@@ -325,7 +325,241 @@ def test_hire_released_after_two_quiet_days(store):
     assert h and h[0]["released_day"] == DAY + 2
 
 
+# --------------------------------------------------------------------------- review fixes
+
+
+class RecordingTwin(StubTwin):
+    """Records every what-if call (levers, days)."""
+
+    def __init__(self):
+        super().__init__()
+        self.whatifs: list[tuple[list, int]] = []
+
+    def whatif(self, state, levers, days, known_events):
+        self.whatifs.append((list(levers), days))
+        return super().whatif(state, levers, days, known_events)
+
+
+class CapturingLLM(FakeLLM):
+    def __init__(self, script=None):
+        super().__init__(script)
+        self.texts: list[str] = []
+
+    def complete(self, tier, messages, schema=None, **kw):
+        with self._lock:
+            self.texts.extend(m["content"] for m in messages)
+        return super().complete(tier, messages, schema, **kw)
+
+
+def key_week(day: int = DAY) -> c.Event:
+    return c.Event(event_id="kc1", kind="key_customer_week", day=day, args={"customer": "C001", "days": 5},
+                   announced_day=day - 3, source="scripted")
+
+
+@pytest.mark.parametrize("day,expect", [(DAY, 3), (89, 2), (90, 1)])
+def test_horizon_clamped_to_scenario_end(store, day, expect):
+    twin = RecordingTwin()
+    policy = OrgPolicy(RUN, load_profile("customer_first"), FakeLLM({}), store, scenario_end=90)
+    _, state, view = setup(twin, day)
+    policy.decide(day, view, [rack(day)], twin, state)
+    assert twin.whatifs and {d for _, d in twin.whatifs} == {expect}
+    assert all(e["horizon_days"] == expect for e in rows(store, "evidence"))
+
+
+def test_whatif_levers_carry_provisional_ids(store):
+    twin = RecordingTwin()
+    _, _, d = run_day(store, base_script(), [rack()], twin=twin)
+    levers = [lv for lvs, _ in twin.whatifs for lv in lvs]
+    assert levers and all(lv.decision_id.startswith(f"whatif:{RUN}:{DAY}:") for lv in levers)
+    assert all(lv.decision_id == d.decision_id for lv in d.levers)
+
+
+def test_lock_over_three_days_clamped_and_applied(store):
+    twin = RecordingTwin()
+    script = base_script({
+        ("MaybeProposal", "quality"): MaybeProposal(proposal=None),
+        ("QualityReply", "quality"): QualityReply(position=pos("o1", ["ev66-1"]),
+                                                  lock=c.Lock(target="customer", ids=["C001"], days=7,
+                                                              reason="key customer week")),
+    })
+    policy, _, d = run_day(store, script, [key_week()], twin=twin)
+    prot = [lv for lv in d.levers if lv.kind == "protect"]
+    assert prot and prot[0].days == 3 and prot[0].ids == ["C001"]
+    locks = [u["text"] for u in rows(store, "utterances") if u["kind"] == "lock"]
+    assert "lock clamped to 3 days (Quality alone)" in locks
+    # the evidence was re-run with the Protect lever: predicted / last_whatif include it
+    assert any(lv.kind == "protect" for lv in policy.last_whatif.levers)
+    opts = rows(store, "options")
+    assert all(any(lv["kind"] == "protect" for lv in o["levers"]) for o in opts)
+    assert len(twin.whatifs) <= 1 + len(opts) + 3
+
+
+def test_lock_survives_position_fallback(store):
+    script = base_script({
+        ("MaybeProposal", "quality"): MaybeProposal(proposal=None),
+        ("QualityReply", "quality"): QualityReply(position=pos("o1", ["ev-bogus"]),
+                                                  lock=c.Lock(target="customer", ids=["C001"], days=2,
+                                                              reason="key customer week")),
+    })
+    _, llm, d = run_day(store, script, [key_week()])
+    assert llm.count("QualityReply", "quality") == 2
+    assert any(r["kind"] == "llm_fallback" and r["role"] == "quality" for r in rows(store, "llm_calls"))
+    prot = [lv for lv in d.levers if lv.kind == "protect"]
+    assert prot and prot[0].days == 2
+
+
+def test_amendments_capped_at_two(store):
+    twin = RecordingTwin()
+    script = base_script({
+        ("Position", "ops_manager"): pos("o1", ["ev66-1"], "amend",
+                                         amendment=[c.ReslotTonight(n_moves=120, order="zone")]),
+        ("Position", "reslotting_engineer"): pos("o1", ["ev66-1"], "amend",
+                                                 amendment=[c.ReslotTonight(n_moves=130)]),
+        ("SafetyReply", "safety"): SafetyReply(position=pos("o1", ["ev66-1"], "amend",
+                                                            amendment=[c.CloseAisle(aisle=5, days=2)])),
+    })
+    run_day(store, script, [rack()], twin=twin)
+    amended = [o for o in rows(store, "options") if o["option_id"] not in (opt(1), opt(2))]
+    assert len(amended) == 2
+    assert any("amendment dropped: cap 2" in u["text"] for u in rows(store, "utterances") if u["role"] == "safety")
+    assert len(twin.whatifs) == 1 + 2 + 2
+
+
+def test_display_ids_in_replies_map_to_store_ids(store):
+    script = base_script({
+        ("Position", "ops_manager"): pos("o2", ["ev66-2"]),
+        ("ChairDecision", "program_manager"): c.ChairDecision(option_id="o1", escalate=False,
+                                                              rationale="progress", evidence_ids=["ev66-1"]),
+    })
+    _, llm, d = run_day(store, script, [rack()])
+    assert llm.count("Position", "ops_manager") == 1  # accepted first time
+    ops = [u for u in rows(store, "utterances") if u["role"] == "ops_manager" and u["kind"] == "position"]
+    assert ops[0]["option_id"] == opt(2) and ops[0]["evidence_ids"] == [ev(2)]
+    assert d.option_id == opt(1)
+
+
+def test_prompts_contain_no_run_id(store):
+    run = "RUNzq9"
+    llm = CapturingLLM({
+        ("Proposal", "reslotting_engineer"): proposal("reslot 150 by value", c.ReslotTonight(n_moves=150)),
+        ("MaybeProposal", "ops_manager"): MaybeProposal(proposal=proposal("reslot 100 by zone",
+                                                                          c.ReslotTonight(n_moves=100, order="zone"))),
+        ("QualityReply", "quality"): QualityReply(position=pos("o1", ["ev66-1"]),
+                                                  lock=c.Lock(target="customer", ids=["C001"], days=2, reason="kc")),
+        ("ChairDecision", "program_manager"): c.ChairDecision(option_id="o1", escalate=True,
+                                                              rationale="escalate", evidence_ids=["ev66-1"]),
+    })
+    policy = OrgPolicy(run, load_profile("customer_first"), llm, store)
+    twin, state, view = setup()
+    policy.pending_inbox.append("garbled note from the floor")
+    policy.decide(DAY, view, [rack(), key_week()], twin, state)
+    assert llm.count("DirectorRuling") == 1
+    # next day the board shows yesterday's lock (with its decision id) and evidence rows
+    st, _ = twin.apply_levers(state, [c.Protect(target="customer", ids=["C001"], days=3,
+                                                decision_id=f"{run}-d{DAY}")], DAY)
+    policy.decide(DAY + 1, twin.view(st), [rack(DAY + 1)], twin, st)
+    assert llm.texts and not [t for t in llm.texts if run in t]
+    assert any("Inbox (unparsed)" in t and "garbled note" in t for t in llm.texts)
+    assert any("(d66)" in t for t in llm.texts)
+
+
+class Boom(FakeLLM):
+    def complete(self, tier, messages, schema=None, **kw):
+        if schema is not None and schema.__name__ == "ChairDecision":
+            raise TimeoutError("read timed out")
+        return super().complete(tier, messages, schema, **kw)
+
+
+def test_transport_error_uses_fallback_and_logs(store):
+    policy = OrgPolicy(RUN, load_profile("customer_first"), Boom(base_script()), store)
+    twin, state, view = setup()
+    d = policy.decide(DAY, view, [rack()], twin, state)
+    assert isinstance(d, c.Decision) and d.option_id
+    fb = [r for r in rows(store, "llm_calls") if r["model"] == "(transport)"]
+    assert fb and fb[0]["kind"] == "llm_fallback" and fb[0]["role"] == "program_manager"
+    assert "TimeoutError" in str(fb[0]["request"]) and fb[0]["day"] == DAY
+
+
+def test_on_rejections_undoes_pause_and_briefs(store):
+    script = base_script({
+        ("ChairDecision", "program_manager"): c.ChairDecision(option_id="o2", escalate=False, rationale="hold",
+                                                              evidence_ids=["ev66-2"]),
+        ("MaybeProposal", "ops_manager"): MaybeProposal(proposal=proposal("pause", c.PauseReslot(days=2))),
+    })
+    llm = CapturingLLM(script)
+    policy = OrgPolicy(RUN, load_profile("customer_first"), llm, store)
+    twin, state, view = setup()
+    d = policy.decide(DAY, view, [rack()], twin, state)
+    assert [lv.kind for lv in d.levers] == ["pause_reslot"] and policy.paused_until == DAY + 1
+    policy.on_rejections(DAY, [c.LeverRejection(lever=d.levers[0], reason="no moves queued")])
+    assert policy.paused_until == 0
+    assert policy.pending_rejections == ["rejected by floor: pause_reslot — no moves queued"]
+    n = len(llm.calls)
+    policy.decide(DAY + 1, view, [rack()], twin, state)  # otherwise quiet: the rejection makes it a meeting
+    assert any(s == "ChairTriage" for s, *_ in llm.calls[n:])
+    assert any("rejected by floor: pause_reslot — no moves queued" in t for t in llm.texts)
+    assert policy.pending_rejections == []
+
+
+def test_on_rejections_restores_standing_plan_and_overtime(store):
+    policy = OrgPolicy(RUN, load_profile("customer_first"), FakeLLM(), store)
+    rs = c.ReslotTonight(n_moves=50, order="zone", decision_id="d")
+    ot = c.Overtime(shift="day", pool="pm", hours=6, decision_id="d")
+    policy._apply_run_state(DAY, [rs, ot])
+    wk = (DAY - 1) // 7
+    assert policy.standing_budget == 50 and policy.overtime_used[wk] == 6
+    policy.on_rejections(DAY, [c.LeverRejection(lever=ot, reason="pool empty")])
+    assert policy.standing_budget == 50 and policy.overtime_used.get(wk, 0) == 0
+    policy.on_rejections(DAY, [c.LeverRejection(lever=rs, reason="x")])
+    assert policy.standing_budget == 200 and policy.standing_order == "value"
+
+
+def test_snapshot_state_round_trips(store):
+    import json
+    policy, _, _ = run_day(store, base_script(), [rack()])
+    policy.pending_rejections.append("rejected by floor: overtime — x")
+    snap = json.loads(json.dumps(policy.snapshot_state()))
+    assert snap["version"] == 1 and snap["last_ref"] and snap["last_ref_day"] == DAY
+    hires = [h for h in rows(store, "hires") if h.get("released_day") is None]
+    other = OrgPolicy("child", load_profile("customer_first"), FakeLLM(), store)
+    other.restore({"hires": hires, "paused_until": 0, "org_state": snap}, None)
+    assert other.snapshot_state() == snap
+    assert other.present == policy.present and "safety" in other.present
+
+
+def test_restore_rebuilds_present_and_applies_forced(store):
+    policy = OrgPolicy("child", load_profile("customer_first"), FakeLLM(), store)
+    hires = [{"role": "quality", "day": 60, "trigger": "key_customer_week", "released_day": None},
+             {"role": "nobody", "day": 60, "trigger": "x", "released_day": None}]
+    forced = c.Decision(decision_id="f1", day=DAY, decided_by="user", rationale="fork",
+                        levers=[c.PauseReslot(days=3, decision_id="f1"), c.ReslotTonight(n_moves=80, decision_id="f1"),
+                                c.Overtime(shift="day", pool="pm", hours=4, decision_id="f1")])
+    policy.restore({"hires": hires, "paused_until": 2}, forced)
+    assert policy.present == set(policy.always) | {"quality"}
+    assert policy.quiet_streak == {"quality": 0}
+    assert policy.paused_until == DAY + 2 and policy.standing_budget == 80
+    assert policy.overtime_used == {(DAY - 1) // 7: 4.0}
+    assert not rows(store, "decisions")
+    policy.on_rejections(DAY, [c.LeverRejection(lever=forced.levers[0], reason="x")])
+    assert policy.paused_until == 2
+
+
+def test_violations_relative_to_ref(store):
+    policy = OrgPolicy(RUN, load_profile("customer_first"), FakeLLM(), store)
+    y = c.Kpis(lines=1000, on_time_pct=80.0, mispick_rate=1.0, pm_peak_zone_load=1.2, stockout_lines=40)
+    assert set(policy._violations(y, DAY)) == {"on_time_pct", "mispick_rate", "pm_peak_zone_load", "stockout_lines"}
+    ref = c.Kpis(lines=1000, on_time_pct=81.0, mispick_rate=0.9, pm_peak_zone_load=1.25, stockout_lines=30)
+    policy.last_ref = c.WhatIf(levers=[], days=3, kpis_by_day=[ref, ref, ref], kpis_total=ref,
+                               expected_near_misses=0.0, safety_risk_max=0.5, pm_peak_zone_load=1.25)
+    policy.last_ref_day = DAY - 1
+    assert policy._violations(y, DAY) == []
+    worse = y.model_copy(update={"on_time_pct": 78.0, "mispick_rate": 1.2, "stockout_lines": 46,
+                                 "safety_risk_max": 1.1})
+    assert set(policy._violations(worse, DAY)) == {"on_time_pct", "mispick_rate", "stockout_lines", "safety_risk_max"}
+
+
 # --------------------------------------------------------------------------- live (Crusoe)
+
 
 
 @pytest.mark.live

@@ -22,6 +22,7 @@ import contracts as c
 from engine import events as ev
 from engine import snapshot
 from engine.run import ForkSpec, make_policy, make_twin, run
+from engine.run import policy_kwargs as build_policy_kwargs
 from engine.store import RunStore
 from org.scoring import load_profile
 
@@ -82,19 +83,22 @@ def fork_run(parent_run_id: str, day: int, levers: list = (), constraints: list 
     """Fork synchronously and return the child run id.
 
     `horizon` (added for learn/retro): simulate only days `day .. day + horizon - 1` instead of
-    the parent's remaining range. `policy_kwargs` are passed to `make_policy` (e.g. `llm`,
-    `store`, `profile`, `playbook_rules` for "org"; baselines ignore them)."""
+    the parent's remaining range. The policy gets `engine.run.policy_kwargs(profile, store,
+    parent playbook, parent scenario)` (scenario_end = the parent's last day, not the trimmed
+    horizon), updated with `policy_kwargs` (e.g. `llm`); baselines ignore them. The org
+    policy's `restore(payload, forced_decision)` is called by the loop."""
     store = store or RunStore()
     store.create_schema()
     child, spec, scenario, prof, policy_name = prepare_fork(
         parent_run_id, day, levers, constraints, store=store, profile=profile, policy_name=policy_name)
+    playbook = store.get_run(child)["playbook_version"] or "v0"
+    kwargs = {**build_policy_kwargs(prof, store, playbook, scenario), **(policy_kwargs or {})}
     if horizon is not None:
         if horizon < 1:
             raise ValueError("horizon must be >= 1")
         scenario = scenario.model_copy(update={"days": (scenario.days[0], min(scenario.days[1], day + horizon - 1))})
-    run(scenario, prof, make_policy(policy_name, child, **(policy_kwargs or {})), twin or make_twin(), mode="fork",
-        playbook_version=store.get_run(child)["playbook_version"] or "v0", store=store, fork=spec,
-        snapshot_dir=snapshot_dir)
+    run(scenario, prof, make_policy(policy_name, child, **kwargs), twin or make_twin(), mode="fork",
+        playbook_version=playbook, store=store, fork=spec, snapshot_dir=snapshot_dir)
     return child
 
 
