@@ -111,10 +111,11 @@ the console's scenario and run routes: it sits above Gemba and can't touch the f
 reasoning. And the org learns from itself: after a run a coach finds the worst day, traces it to the decision,
 proposes a different move and a one-line lesson, and tests it by forking that day. We keep a lesson only if
 the fork actually applied it and did better by a margin, with no rate-limit fallbacks in the window."
-- If the gate promoted v1: "…and the new playbook beat v0 on three scenarios it never trained on, with no new
-  violations. Three scenarios, one seed, five-day forks: evidence, not proof."
-- If not: "Today's gate didn't promote; the verified lessons are in the record and the rule is the point:
-  nothing enters the playbook without a counterfactual."
+- Gate result (16:36, learning pass on DeepSeek-V4-Pro): "This afternoon the coach proposed six lessons; the
+  rule accepted one. The new playbook then beat the old one on three scenarios it never trained on: score
+  0.4794 to 0.4800, violations 18.7 to 18.0, no fallbacks. A promotion by the rule, by a hair. Three
+  scenarios, one seed, five-day forks: evidence, not proof. Earlier today a lenient version of the rule
+  accepted three lessons and the gate refused them; both are in the Learning view."
 
 **Close (about 20 s).** [floor]
 "The reslot is just today's scenario. The twin is behind a protocol and the org chart is config, so the same

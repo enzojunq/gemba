@@ -46,12 +46,14 @@ new customer, and, fed with live floor data and real decisions, becomes the stan
 
 ## Form answers
 
-- **Problem statement:** **Done means done** (primary). The org writes its own done-checks within code-set
-  bounds, code verifies them every simulated day, drift detectors force shrink-or-stop, and the recorded month
-  ran unattended end to end. Version N+1 is built and shown (lessons proven by forks, a gate on unseen
-  scenarios) but today's gate did not promote; the spec's own rule (section 21) says submit under Done Means
-  Done in that case. Switch to **Version N+1** only if the DeepSeek pass promotes before you submit. Shared
-  Brain is the supporting story (the board every agent reads before speaking and writes after).
+- **Problem statement:** **Version N+1.** The 16:36 gate promoted playbook v1: under the strict acceptance
+  rule (fork applied the alternative, delta > 0.01 over 5 days, no new hard-limit breach, no LLM fallback in
+  the window) the retro accepted 1 lesson of 6 candidates; crew v1 then beat crew v0 on the three held-out
+  scenarios (two event kinds never trained on): mean score 0.4794 → 0.4800, violations 18.67 → 18.00, zero
+  fallbacks on either side. Say the margin out loud: a promotion by the rule, on 3 scenarios × 1 seed, with
+  the learning pass on DeepSeek-V4-Pro (the recorded heroes are Nemotron). Done Means Done is the fallback
+  story and is fully built (org-written checks verified daily, drift detectors, 30 days unattended); Shared
+  Brain is the supporting one.
 - **Best Use of Nemotron:** Yes. Every agent call of the recorded runs is Nemotron 3 Super on Crusoe: strict
   JSON-schema output for every role, the reasoning toggle on only for the chair's decision, the director, the
   threshold pick and the retro coach, a fixed prompt order for the KV cache, 209 calls and $0.30 for a 30-day
