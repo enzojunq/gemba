@@ -52,6 +52,7 @@ CAP_FLOOR_UNITS = 20
 TARGET_PM_SHARE = 0.68            # slotter param: share of hist lines the target PM should carry
 TARGET_KEEP_RANK = 0              # slotter param: PM residents ranked within this stay put if their zone has room (0 = off)
 TARGET_ZONE_CAP = 3800.0          # slotter param: max expected lines/day per PM zone in the target (~0.92 x capacity)
+TARGET_MAX_SWAPS = 300            # slotter param: incoming fast SKUs that take an occupied near slot (3-leg swap)
 TARGET_ZONE_CAPACITY = 2 * 16 * 3600 * 0.9 / 25      # 4147 lines/day: 2 pickers x 16 h x 0.9 breaks / 25 s
 
 ROLES_PER_PICK_SHIFT = {"pm": 12, "forklift": 14, "replen": 4, "pallet": 3, "consolidation": 10, "loading": 6}
@@ -343,7 +344,7 @@ def finish_current(rng, loc, pm_skus, v_total, upd, undersized):
 # --------------------------------------------------------------------------- target layout (days 1..history only)
 def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame, current: pd.DataFrame,
                  zone_cap: float = TARGET_ZONE_CAP, pm_share: float = TARGET_PM_SHARE,
-                 tolerance_m: int = KEEP_TOLERANCE_M, keep_rank: int = None) -> pd.DataFrame:
+                 tolerance_m: int = KEEP_TOLERANCE_M, keep_rank: int = None, max_swaps: int = None) -> pd.DataFrame:
     """Deterministic slotter. Uses only history lines. The fastest SKUs fill the PM until it carries ``pm_share`` of
     lines (at most 720 SKUs), balanced so no zone exceeds ``zone_cap`` lines/day (keeping a SKU's current PM slot
     when the zone allows, family members in one zone when it fits; leftover PM slots stay empty); the next fastest
@@ -361,6 +362,7 @@ def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame
     cur_loc = cur["active_loc"].reindex(sku_ids).tolist()
     order = np.lexsort((np.arange(N_SKU), -v))                    # by v desc, sku index asc
     keep_rank = TARGET_KEEP_RANK if keep_rank is None else keep_rank
+    max_swaps = TARGET_MAX_SWAPS if max_swaps is None else max_swaps
 
     target = [""] * N_SKU
     # PM
@@ -425,6 +427,26 @@ def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame
             used.add(l)
         else:
             pending.append(s)
+    # swaps through staging: the fastest pending SKUs take level-1 slots in their assigned aisle that slower kept
+    # SKUs occupy; the displaced SKU moves to a free slot. Keeps the reslot at ~12 nights of 200 legs (spec 7.1).
+    kept_l1: dict[int, list[int]] = {a: [] for a in range(1, N_AISLE + 1)}
+    for s in rest:
+        l = target[s]
+        if l and l.endswith("-1"):
+            kept_l1[int(l[1:3])].append(s)
+    for a in kept_l1:
+        kept_l1[a].sort(key=lambda s: (v[s], s))                  # slowest first
+    n_swaps, new_pending, displaced = 0, [], []
+    for s in pending:
+        a = assigned_aisle[s]
+        if n_swaps < max_swaps and kept_l1[a] and v[kept_l1[a][0]] < v[s]:
+            d = kept_l1[a].pop(0)
+            target[s], target[d] = target[d], ""
+            displaced.append(d)
+            n_swaps += 1
+        else:
+            new_pending.append(s)
+    pending = new_pending + displaced
     free = {a: [aisle_loc(a, b, lv) for lv in (1, 2) for b in range(1, BAYS + 1)] for a in range(1, N_AISLE + 1)}
     free = {a: [x for x in slots if x not in used] for a, slots in free.items()}
     for s in pending:

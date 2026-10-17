@@ -134,9 +134,15 @@ def verify(db: str) -> list[Check]:
     checks.append(Check("target: peak PM zone load (hist lines/day / 4147)", round(tpeak, 3), "<= 0.95", tpeak <= 0.95))
     checks.append(Check("target: PM share of hist lines", round(tshare, 3), "0.60..0.75", 0.60 <= tshare <= 0.75))
     checks.append(Check("info: target PM zone lines/day", [int(x) for x in tzl.reindex(range(1, 7), fill_value=0)], "balanced, <= 3800", True))
-    # informational: target vs current changes and lines/order
-    n_changed = int((t["slotting_target"]["active_loc"].to_numpy() != t["slotting_current"]["active_loc"].to_numpy()).sum())
-    checks.append(Check("info: SKU active slots changed current->target", n_changed, "~1100 (900..1300 at full scale)", True))
+    # reslot size: changed slots and implied legs (destination occupied in current = swap through staging = 3 legs)
+    tgt_loc, cur_loc = t["slotting_target"]["active_loc"], t["slotting_current"]["active_loc"]
+    moved = tgt_loc[tgt_loc.to_numpy() != cur_loc.to_numpy()]
+    n_changed = int(len(moved))
+    n_swaps = int(moved.isin(set(cur_loc)).sum())
+    legs = n_changed + 2 * n_swaps
+    checks.append(Check("reslot: SKU active slots changed current->target", n_changed, "900..1300", 900 <= n_changed <= 1300))
+    checks.append(Check("reslot: implied legs (swap 3, direct 1)", legs, "1800..2600", 1800 <= legs <= 2600))
+    checks.append(Check("info: moves into a currently occupied slot (swaps)", n_swaps, "~400-550", True))
     lpo = len(lines) / max(1, len(orders))
     checks.append(Check("info: lines per order", round(lpo, 2), "~12", True))
     return checks
