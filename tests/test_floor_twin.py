@@ -457,3 +457,29 @@ def test_real_whatif_safety_matches_actual_night(real_twin):
             assert isinstance(v, float) and math.isfinite(v)
         assert all(isinstance(k.near_misses, float) and math.isfinite(k.near_misses) for k in w.kpis_by_day)
     assert s0.day == 61  # what-if never mutates its input state
+
+
+def test_real_night_safety_monotone_and_below_limit(real_twin):
+    """Night movers are people, not legs. On days 61-65 of reslot_default, for 100/200/280 legs: the night
+    risk stays below 1.0 in actual days and what-ifs, no aisle-hour holds more movers than are on shift,
+    and total night presence (mover-hours across aisles) is non-decreasing in legs. The per-hour maximum
+    itself is not monotone: a bigger budget spreads the same third legs over more hours."""
+    sc = load_scenario("reslot_default")
+    cal = scenario_events(sc)
+    s = real_twin.initial_state(sc)
+    for d in range(61, 66):
+        night_max, presence = {}, {}
+        for n in (100, 200, 280):
+            s_n, _ = real_twin.apply_levers(s, [reslot(n, f"d{d}")], d)
+            _, r = real_twin.step_day(s_n, d, real_twin.actual_demand(d), [])
+            night = [h for h in r.hourly["hours"] if h["phase"] == "night"]
+            movers = max(h["pools"]["night_move"]["available"] for h in night)
+            night_max[n] = max(max(h["safety_risk"]) for h in night)
+            presence[n] = sum(sum(h["safety_risk"]) * 3.0 for h in night)
+            assert night_max[n] < 1.0 and night_max[n] * 3.0 <= movers + 1e-6, (d, n, night_max[n], movers)
+            assert r.kpis.safety_risk_max < 1.0, (d, n, r.kpis.safety_risk_max)
+            w = real_twin.whatif(s, [reslot(n, "w")], 1, c.visible(cal, d))
+            assert w.safety_risk_max < 1.0, (d, n, w.safety_risk_max)
+        assert presence[100] <= presence[200] + 1e-6 <= presence[280] + 1e-6, (d, presence)
+        s, _ = real_twin.apply_levers(s, [reslot(200, f"d{d}")], d)
+        s, _ = real_twin.step_day(s, d, real_twin.actual_demand(d), [])

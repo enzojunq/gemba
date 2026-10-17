@@ -453,7 +453,10 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
             legs_cap = av["night_move"] * 3600.0 / K.MOVE_LEG_SECONDS + legs_budget_carry
             n_legs = int(legs_cap)
             legs_budget_carry = legs_cap - n_legs
-            done_legs, sample, stalled, legs_by_aisle = _execute_legs(inputs, s, approved, n_legs, frozen, day, overload)
+            temp_movers = av["night_move"] - hc["night"]["night_move"]
+            legs_per_mover_hour = 3600.0 / K.MOVE_LEG_SECONDS
+            aisle_leg_cap = int((K.MAX_MOVERS_PER_AISLE + max(temp_movers, 0.0)) * legs_per_mover_hour)
+            done_legs, sample, stalled, legs_by_aisle = _execute_legs(inputs, s, approved, n_legs, frozen, day, overload, aisle_leg_cap)
             moves_h["done"] = done_legs
             moves_h["sample"] = sample
             moves_done_tonight += done_legs
@@ -463,15 +466,17 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
             if stalled and not stall_reported:
                 violations.append(f"staging full: {stalled} legs stalled on night of day {day}")
                 stall_reported = True
+            # a leg's 6 minutes are split between its origin and destination aisle, and an aisle can
+            # never hold more movers than are on shift (people, not legs)
             for a, n_a in legs_by_aisle.items():
-                aisle_people[a] += n_a * K.MOVE_LEG_SECONDS / 3600.0
+                aisle_people[a] += min(av["night_move"], 0.5 * n_a * K.MOVE_LEG_SECONDS / 3600.0)
             approved = [m for m in approved if m.legs_done < m.legs]
         hour_queue["night_move"] = sum(m.legs - m.legs_done for m in approved)
         stage_pct = s.staging_pct()
         stage_max = max(stage_max, stage_pct)
         if stage_pct > K.CONGESTION_THRESHOLD:
             for a in K.STAGING_ADJACENT_AISLES:
-                aisle_people[a] += 1.0
+                aisle_people[a] += K.CONGESTION_PEOPLE
 
         # safety
         risk = aisle_people / K.SAFE_LIMIT
@@ -571,7 +576,7 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
 
 
 def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: int, frozen: set[int], day: int,
-                  overload: float = 1.0) -> tuple[int, list[dict], int, dict[int, int]]:
+                  overload: float = 1.0, aisle_leg_cap: int = 10 ** 9) -> tuple[int, list[dict], int, dict[int, int]]:
     """Execute up to `n_legs` legs of the approved moves in order.
     Returns (legs done, sample for the animation, stalled legs, legs touching each aisle)."""
     done = 0
@@ -607,6 +612,10 @@ def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: i
         cur = int(s.sku_loc[m.sku])
         tgt = m.to_loc
         if aisle_of_loc(cur) in frozen or aisle_of_loc(tgt) in frozen:
+            return False
+        # dispatch: round-robin across aisles, never more than the cap of legs in one aisle this hour
+        touched = {a for a in (aisle_of_loc(cur), aisle_of_loc(tgt), aisle_of_loc(m.from_loc) if m.legs_done == 1 else 0) if a}
+        if any(legs_by_aisle.get(a, 0) >= aisle_leg_cap for a in touched):
             return False
         occupant = s.loc_occupant.get(tgt, -1)
         if m.legs_done == 0:
@@ -664,8 +673,7 @@ def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: i
             if done >= n_legs:
                 break
             if m.legs_done == wave - 1 and m.legs_done < m.legs:
-                if not one_leg(m) and wave == 1 and not free_staging:
-                    stalled += 1
-    if done < n_legs:
-        stalled += sum(1 for m in approved if m.legs_done == 0 and not free_staging)
+                one_leg(m)
+    if done < n_legs and not free_staging:
+        stalled += sum(1 for m in approved if m.legs_done == 0)
     return done, sample, stalled, legs_by_aisle
