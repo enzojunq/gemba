@@ -1,0 +1,997 @@
+"""The morning standup (spec 10.5): `OrgPolicy`, the LLM org as a `contracts.DecisionPolicy`.
+
+    BRIEF (code) -> TRIAGE (code + chair) -> PROPOSE -> EVIDENCE (what-ifs) -> POSITIONS
+    -> AMEND (max 1 round) -> SCORE (code) -> DECIDE (chair) -> ESCALATE (director, if needed)
+    -> COMMIT (code: authority, stamping)
+
+Code decides quiet days, hiring, authority, scores, feasibility and every rule the chair must
+follow; the LLMs propose, argue and narrate. Every LLM call goes through `llm.complete` with
+`build_messages(role prompt, playbook rules, board snapshot, task)` and a safe `fallback`, so a
+bad answer never crashes a run (spec 10.6).
+
+Engine-facing extras (all optional for the engine to use):
+- `decision.predicted`: the chosen option's first what-if day (`Kpis`), attached with
+  `object.__setattr__` (not a pydantic field: `model_dump` ignores it, `model_copy` keeps it).
+  The engine reads `getattr(decision, "predicted", None)`. The full `WhatIf` is `self.last_whatif`.
+- `decision.deviates_from_top_score` (same mechanism) and `self.last_deviates`.
+- `self.pending_drift`: the engine may append drift flags (or call `on_drift(day, flag)`); they
+  are read at the next BRIEF. `self.pending_inbox`: raw inbox texts not yet parsed.
+- `self.last_spec_hashes`: today's evidence spec hashes; `self.llm_usd`, `self.llm_calls`.
+
+The client is synchronous, so positions run in a `ThreadPoolExecutor(max_workers=4)`; their
+results are processed in sorted role order, so the outcome does not depend on thread timing.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import os
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from typing import Any
+
+from pydantic import BaseModel, ValidationError
+
+import contracts as c
+from contracts import (
+    ChairDecision, ChairTriage, Decision, DirectorRuling, DoneCheck, Event, FloorView, Kpis, Lock,
+    Position, Profile, Proposal, Protect, PauseReslot, ReslotTonight, Veto, WhatIf,
+)
+from llm.prompt import build_messages
+from org import authority
+from org.board import Board, EvidenceRow, StanceMemory, snapshot_text
+from org.playbook_select import select_rules
+from org.roles import Role, always_present, chair, director, hire_triggers, load_roles, role_prompt
+from org.scoring import Feasibility, Score, feasibility, least_bad, load_profile, score_whatif
+
+log = logging.getLogger(__name__)
+
+HORIZON = 3
+MAX_OPTIONS = 3
+DEFAULT_STANDING_BUDGET = 200
+RELEASE_AFTER_QUIET_DAYS = 2
+TIE_FRACTION = 0.02
+TIE_FLOOR = 0.01
+"""Top-2 scores 'within 2%': |s1 - s2| <= 2% of max(|s1|, |s2|, TIE_FLOOR). Relative to the
+larger magnitude; the floor keeps two near-zero scores from always tying on rounding noise
+(0 vs 0 still ties)."""
+EPS = 1e-9
+MAX_WORKERS = 4
+
+# --------------------------------------------------------------------------- reply schemas
+
+
+class Thresholds(BaseModel):
+    values: dict[str, float]
+
+
+class Note(BaseModel):
+    text: str
+
+
+class MaybeProposal(BaseModel):
+    proposal: Proposal | None = None
+
+
+class SafetyReply(BaseModel):
+    position: Position
+    veto: Veto | None = None
+
+
+class QualityReply(BaseModel):
+    position: Position
+    lock: Lock | None = None
+
+
+class Accept(BaseModel):
+    accept: bool
+    reason: str
+
+
+LEVER_HELP: dict[str, str] = {
+    "reslot_tonight": '{"kind":"reslot_tonight","n_moves":200,"order":"value|zone|family","include_zones":[],"exclude_zones":[]}',
+    "pause_reslot": '{"kind":"pause_reslot","days":1}',
+    "labor_allocate": '{"kind":"labor_allocate","shift":"day|swing|night","pool":"pm|forklift|pallet|replen|consolidation|loading|night_move|temp","headcount":12}',
+    "overtime": '{"kind":"overtime","shift":"day|swing|night","pool":"pm","hours":8}',
+    "hire_temps": '{"kind":"hire_temps","count":4,"start_day":<day>,"days":3}',
+    "protect": '{"kind":"protect","target":"zone|skus|customer","ids":["..."],"days":3}',
+    "resize_slots": '{"kind":"resize_slots","skus":["S0001"],"days_cover":3.0}',
+    "wave_priority": '{"kind":"wave_priority","mode":"rush_first|by_cutoff|by_zone"}',
+    "close_aisle": '{"kind":"close_aisle","aisle":5,"days":2}',
+    "reopen_aisle": '{"kind":"reopen_aisle","aisle":5}',
+    "staging_clearance": '{"kind":"staging_clearance","n_movers":2}',
+}
+
+
+def tier_for(tier: str) -> str:
+    """Map a role tier to the tier actually called: "ultra" runs on "super" while MODEL_ULTRA
+    is empty (decision log 26: Ultra is not in the Crusoe catalog today)."""
+    if tier == "ultra" and not (os.environ.get("MODEL_ULTRA") or "").strip():
+        return "super"
+    return tier
+
+
+def lever_str(lv: c.Lever) -> str:
+    args = {k: v for k, v in lv.model_dump(mode="json", exclude={"kind", "decision_id"}).items()
+            if v not in ([], None)}
+    return f"{lv.kind}(" + ", ".join(f"{k}={v}" for k, v in args.items()) + ")"
+
+
+def spec_hash(levers: list[c.Lever], day: int) -> str:
+    """sha256 of the sorted lever dumps + day (the drift detector's repeat-whatif key)."""
+    dumps = sorted(json.dumps(lv.model_dump(mode="json", exclude={"decision_id"}), sort_keys=True)
+                   for lv in levers)
+    return hashlib.sha256(json.dumps({"levers": dumps, "day": day}).encode()).hexdigest()
+
+
+def _event_end(e: Event) -> int:
+    return e.day + max(1, int(e.args.get("days", 1) or 1)) - 1
+
+
+# --------------------------------------------------------------------------- per-meeting state
+
+
+@dataclass
+class Option:
+    option_id: str
+    label: str
+    levers: list[c.Lever]
+    proposed_by: str
+    rationale: str = ""
+    evidence_id: str | None = None
+    whatif: WhatIf | None = None
+    score: Score | None = None
+    feas: Feasibility | None = None
+    vetoed_by: str | None = None
+    notes: list[str] = field(default_factory=list)
+    replaced: bool = False
+
+    @property
+    def total(self) -> float:
+        return self.score.total if self.score is not None else -math.inf
+
+    @property
+    def feasible(self) -> bool:
+        return bool(self.feas and self.feas.feasible)
+
+
+@dataclass
+class _Meeting:
+    day: int
+    meeting_id: str
+    seq: int = 0
+    n_options: int = 0
+    options: list[Option] = field(default_factory=list)
+    ref: WhatIf | None = None
+    ref_id: str | None = None
+    lock_levers: list[c.Lever] = field(default_factory=list)
+    positions: dict[str, Position] = field(default_factory=dict)
+
+    def active(self) -> list[Option]:
+        return [o for o in self.options if not o.replaced]
+
+    def get(self, option_id: str | None) -> Option | None:
+        return next((o for o in self.active() if o.option_id == option_id), None)
+
+
+# --------------------------------------------------------------------------- the policy
+
+
+class OrgPolicy:
+    name = "org"
+
+    def __init__(self, run_id: str, profile: Profile | str | None = None, llm: Any = None, store: Any = None,
+                 roles: dict[str, Role] | None = None, playbook_rules: list[dict] | None = None, seed: int = 0):
+        self.run_id = run_id
+        self.profile = (load_profile(profile or "customer_first") if not isinstance(profile, Profile) else profile)
+        if store is None:
+            from engine.store import RunStore
+            store = RunStore()
+            store.create_schema()
+        self.store = store
+        if llm is None:
+            from llm.client import LLM
+            llm = LLM()
+        self.llm = llm
+        if getattr(llm, "on_call", "absent") is None:  # a real client without a sink: log to llm_calls
+            llm.on_call = self._on_call
+        self.roles = roles if roles is not None else load_roles()
+        self.playbook_rules = list(playbook_rules or [])
+        self.seed = seed
+        self.chair_id = chair(self.roles).id
+        self.director_id = director(self.roles).id
+        self.always = always_present(self.roles)
+        self.engineer_id = "reslotting_engineer" if "reslotting_engineer" in self.roles else self.chair_id
+        self._prompts = {rid: role_prompt(r) for rid, r in self.roles.items()}
+
+        # per-run state
+        self.present: set[str] = set(self.always)
+        self.quiet_streak: dict[str, int] = {}  # hired role -> consecutive days without its trigger
+        self.stances = StanceMemory()
+        self.evidence_rows: list[EvidenceRow] = []
+        self.known_evidence: set[str] = set()
+        self.overtime_used: dict[int, float] = {}  # week index -> hours
+        self.meetings_held = 0
+        self.standing_budget = DEFAULT_STANDING_BUDGET
+        self.standing_order = "value"
+        self.paused_until = 0
+        self.agreements: list[str] = []
+        self.pending_drift: list[Any] = []
+        self.pending_inbox: list[str] = []
+        self.last_spec_hashes: list[str] = []
+        self.last_whatif: WhatIf | None = None
+        self.last_deviates = False
+        self.llm_calls = 0
+        self.llm_usd = 0.0
+        self.llm_latency_ms = 0
+        self._lock = threading.Lock()
+        self._day = 0
+        self._tags: set[str] = set()
+        self.board: Board | None = None
+
+    # ================================================================== engine hooks
+    def on_drift(self, day: int, flag: Any) -> None:
+        """Engine hook: a drift flag raised at the end of `day` is briefed next morning."""
+        self.pending_drift.append(flag)
+
+    def _on_call(self, row: dict) -> None:
+        try:
+            self.store.write_llm_call(row, day=self._day)
+        except Exception:  # noqa: BLE001 - logging must never break a meeting
+            log.exception("could not log llm call")
+
+    # ================================================================== LLM plumbing
+    def _ask(self, role_id: str, schema: type[BaseModel], task: str, fallback: BaseModel, *,
+             tier: str | None = None, reasoning: bool = False, max_tokens: int = 800,
+             board_text: str | None = None) -> BaseModel:
+        role = self.roles[role_id]
+        memory = self.stances.render(role_id)
+        msgs = build_messages(self._prompts[role_id], select_rules(self.playbook_rules, role_id, self._tags),
+                              board_text if board_text is not None else snapshot_text(self.board),
+                              task + ("\n\n" + memory if memory else ""))
+        out, meta = self.llm.complete(tier_for(tier or role.model_tier), msgs, schema, role=role_id,
+                                      run_id=self.run_id, reasoning=reasoning, max_tokens=max_tokens,
+                                      fallback=fallback)
+        with self._lock:
+            self.llm_calls += 1
+            self.llm_usd += float(getattr(meta, "usd", 0.0) or 0.0)
+            self.llm_latency_ms += int(getattr(meta, "latency_ms", 0) or 0)
+        if not isinstance(out, schema):
+            log.warning("%s returned %s, expected %s; using fallback", role_id, type(out).__name__, schema.__name__)
+            return fallback
+        return out
+
+    def _log_fallback(self, role_id: str, reason: str) -> None:
+        """An llm_fallback row for a code-level fallback (e.g. a position that never cited evidence)."""
+        try:
+            self.store.write_llm_call(call_id=uuid.uuid4().hex, run_id=self.run_id, day=self._day, role=role_id,
+                                      model="(code)", request={"reason": "validation"},
+                                      response={"llm_fallback": True, "error": reason}, usd=0.0,
+                                      kind="llm_fallback", fallback_used=True)
+        except Exception:  # noqa: BLE001
+            log.exception("could not log fallback")
+
+    def _parallel(self, fn, items: list) -> list:
+        if len(items) <= 1:
+            return [fn(x) for x in items]
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            return list(ex.map(fn, items))
+
+    # ================================================================== thresholds
+    def pick_thresholds(self, checks: list[DoneCheck]) -> list[DoneCheck]:
+        """One chair call (Ultra, reasoning) picks each threshold within its code-set bounds."""
+        if not checks:
+            return []
+        lines = [f"- {k.check_name}: {k.metric} {k.op} threshold (default {k.threshold:g}, allowed "
+                 f"[{k.min_threshold:g}, {k.max_threshold:g}])" for k in checks]
+        task = ("Pick the done-check thresholds for this run. Stay inside each allowed range; the company "
+                "profile is your anchor.\n" + "\n".join(lines)
+                + '\n\nReply JSON {"values": {"<check_name>": <number>, ...}}.')
+        p = self.profile
+        board = (f"Run start. Profile {p.id}: weights {p.weights}; targets {p.targets}; "
+                 f"hard limits {p.hard_limits}; budgets {p.budgets}.")
+        fallback = Thresholds(values={k.check_name: k.threshold for k in checks})
+        out = self._ask(self.chair_id, Thresholds, task, fallback, tier="ultra", reasoning=True,
+                        max_tokens=1500, board_text=board)
+        result = []
+        for k in checks:
+            v = out.values.get(k.check_name, k.threshold)
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                v = k.threshold
+            v = min(k.max_threshold, max(k.min_threshold, v)) if math.isfinite(v) else k.threshold
+            result.append(k.model_copy(update={"threshold": v}))
+        return result
+
+    # ================================================================== decide
+    def decide(self, day: int, view: FloorView, events: list[Event], twin: Any, state: Any) -> Decision:
+        self._day = day
+        m = self._m = _Meeting(day=day, meeting_id=f"{self.run_id}-m{day}")
+        self._evn = 0
+        self.last_spec_hashes = []
+        self.last_deviates = False
+
+        # ---- 1. BRIEF (code)
+        yesterday, predicted = self._yesterday(day)
+        new_events = sorted([e for e in events if e.day == day or e.announced_day == day],
+                            key=lambda e: (e.day, e.kind, e.event_id))
+        kinds = sorted({e.kind for e in new_events})
+        consequences = [e for e in events if e.source == "consequence" and e.day == day]
+        violations = self._violations(yesterday)
+        drift_flags, self.pending_drift = list(self.pending_drift), []
+        drift = [self._flag_text(f) for f in drift_flags]
+        inbox = [f"{e.kind} {e.args}" for e in new_events if e.source == "inbox"] + list(self.pending_inbox)
+        self.pending_inbox = []
+        self._tags = set(kinds) | set(violations) | {getattr(f, "kind", str(f)) for f in drift_flags}
+
+        # ---- 2. TRIAGE (code): hiring, then quiet-day check
+        kpis_y = yesterday.model_dump(exclude={"mispick_rate_by_customer"}) if yesterday else {}
+        fired = hire_triggers(self.roles, kinds, kpis_y)
+        hires_today = self._code_hiring(day, fired)
+        quiet = not (new_events or consequences or drift or inbox or violations)
+        self._view, self._events, self._yday, self._pred = view, events, yesterday, predicted
+        self._inbox, self._drift, self._hires_today = inbox, drift, hires_today
+        self._refresh_board()
+        if quiet:
+            return self._quiet_day(day, view, events, twin, state)
+
+        self.meetings_held += 1
+        triage = self._ask(self.chair_id, ChairTriage, self._triage_task(new_events, violations, drift, inbox, fired),
+                           ChairTriage(meeting=True, agenda=self._code_agenda(new_events, violations, drift, inbox),
+                                       hire=[], release=[]),
+                           tier="ultra", reasoning=False)
+        for h in triage.hire:  # code validates the chair's extra hires
+            r = self.roles.get(h.role)
+            if r is not None and r.attends == "on_trigger" and h.role != self.director_id and h.role not in self.present:
+                self._hire(day, h.role, f"chair: {h.trigger}"[:200])
+        for rid in triage.release:
+            if rid in self.present and rid not in self.always and rid not in fired and rid != self.director_id:
+                self._release(day, rid)
+        agenda = [a for a in triage.agenda if a.strip()] or self._code_agenda(new_events, violations, drift, inbox)
+        kind = "escalation" if "director_escalation" in kinds else "standup"
+        self.store.write_meeting(self.run_id, m.meeting_id, day, kind, sorted(self.present), agenda,
+                                 caused_by=[c.node_id(c.EVT, e.event_id) for e in new_events] or None)
+        self._refresh_board()
+
+        # ---- 3. PROPOSE
+        self._propose(day)
+
+        # ---- 4. EVIDENCE (Paige: code + whatif)
+        m.ref = twin.whatif(state, [], HORIZON, events)
+        m.ref_id = self._write_evidence("do nothing (REF)", [], m.ref, None)
+        for o in m.active():
+            self._run_evidence(o, twin, state, events)
+        self._refresh_board()
+
+        # ---- 5. POSITIONS (parallel)
+        voters = sorted(r for r in self.present
+                        if r not in (self.chair_id, self.director_id) and not self.roles[r].runs_simulator)
+        for role_id, pos, extra in self._parallel(self._position, voters):
+            self._record_position(day, role_id, pos)
+            if isinstance(extra, Veto):
+                self._handle_veto(role_id, extra)
+            elif isinstance(extra, Lock):
+                self._handle_lock(role_id, extra)
+
+        # ---- 6. AMEND (max 1 round, no second position round)
+        self._amend(twin, state, events)
+        self._capacity_check(day)
+
+        # ---- 7. SCORE (code)
+        for o in m.active():
+            if o.score is None and o.whatif is not None:
+                o.score = score_whatif(o.whatif, m.ref, self.profile)
+                o.feas = feasibility(o.whatif, self.profile)
+            self._update_option(o, score=o.score.total if o.score else None, feasible=o.feasible,
+                                vetoed_by=o.vetoed_by, levers=o.levers, evidence_id=o.evidence_id)
+
+        # ---- 8. DECIDE (chair)
+        chosen, rationale, escalate_reasons, deviates, chair_ev = self._chair_decide(day)
+        decided_by = self.chair_id
+        if "director_escalation" in kinds:
+            escalate_reasons.append("director_escalation event on the agenda")
+
+        # ---- 9. ESCALATE
+        if escalate_reasons:
+            chosen, rationale, decided_by = self._escalate(day, chosen, rationale, escalate_reasons)
+
+        # ---- 10. COMMIT (code)
+        return self._commit(day, chosen, rationale, decided_by, deviates, chair_ev, escalate_reasons)
+
+    # ================================================================== brief helpers
+    def _yesterday(self, day: int) -> tuple[Kpis | None, Kpis | None]:
+        try:
+            rows = [r for r in self.store.day_results(self.run_id) if r["day"] == day - 1]
+        except Exception:  # noqa: BLE001
+            return None, None
+        if not rows:
+            return None, None
+        r = rows[-1]
+        k = Kpis.model_validate(r["kpis"]) if r.get("kpis") else None
+        p = Kpis.model_validate(r["predicted"]) if r.get("predicted") else None
+        return k, p
+
+    def _violations(self, k: Kpis | None) -> list[str]:
+        if k is None:
+            return []
+        t = self.profile.targets
+        out = []
+        if k.on_time_pct < t.get("on_time_pct", 97.0) - 2:
+            out.append("on_time_pct")
+        if k.mispick_rate > t.get("mispick_rate", 0.5):
+            out.append("mispick_rate")
+        if k.pm_peak_zone_load > 1.0:
+            out.append("pm_peak_zone_load")
+        if k.safety_risk_max > 1.0:
+            out.append("safety_risk_max")
+        if k.stockout_lines > 0.01 * k.lines:
+            out.append("stockout_lines")
+        return out
+
+    @staticmethod
+    def _flag_text(f: Any) -> str:
+        if isinstance(f, str):
+            return f
+        kind, detail = getattr(f, "kind", None), getattr(f, "detail", None)
+        if kind is None and isinstance(f, dict):
+            kind, detail = f.get("kind"), f.get("detail")
+        return f"{kind}: {detail}" if detail else str(kind or f)
+
+    def _refresh_board(self) -> None:
+        day, view = self._day, self._view
+        evs = sorted([e for e in self._events if _event_end(e) >= day],
+                     key=lambda e: (e.day, e.kind, e.event_id))
+        constraints = [f"reslot paused until day {self.paused_until}"] if self.paused_until >= day else []
+        constraints += [f"{e.kind} {e.args} (days {e.day}-{_event_end(e)})" for e in evs
+                        if e.day <= day <= _event_end(e) and e.day < day]
+        self.board = Board(
+            day=day, view=view, yesterday=self._yday, predicted=self._pred, targets=dict(self.profile.targets),
+            hard_limits=dict(self.profile.hard_limits), events=[(e.kind, e.day, dict(e.args)) for e in evs],
+            constraints=constraints, agreements=list(self.agreements), evidence=list(self.evidence_rows),
+            inbox=list(self._inbox), present={r: self.roles[r].name for r in sorted(self.present)},
+            drift=list(self._drift), hires_today=list(self._hires_today))
+
+    # ================================================================== hiring
+    def _hire(self, day: int, role_id: str, trigger: str) -> None:
+        if role_id in self.present:
+            return
+        self.store.write_hire(self.run_id, day, role_id, trigger)
+        self.present.add(role_id)
+        self.quiet_streak[role_id] = 0
+        self._hires_today = list(getattr(self, "_hires_today", [])) + [f"{self.roles[role_id].name} ({trigger})"]
+
+    def _release(self, day: int, role_id: str) -> None:
+        self.store.release_hire(self.run_id, role_id, day)
+        self.present.discard(role_id)
+        self.quiet_streak.pop(role_id, None)
+
+    def _code_hiring(self, day: int, fired: dict[str, str]) -> list[str]:
+        self._hires_today = []
+        for rid in sorted(self.present - self.always):
+            if rid in fired:
+                self.quiet_streak[rid] = 0
+            else:
+                self.quiet_streak[rid] = self.quiet_streak.get(rid, 0) + 1
+                if self.quiet_streak[rid] >= RELEASE_AFTER_QUIET_DAYS:
+                    self._release(day, rid)
+        for rid, trig in sorted(fired.items()):
+            self._hire(day, rid, trig)
+        return self._hires_today
+
+    # ================================================================== quiet day
+    def _quiet_day(self, day: int, view: FloorView, events: list[Event], twin: Any, state: Any) -> Decision:
+        m = self._m
+        paused = self.paused_until >= day
+        levers: list[c.Lever] = [] if paused else [ReslotTonight(n_moves=self.standing_budget,
+                                                                 order=self.standing_order)]
+        plan = "reslot paused (pause in force)" if paused else \
+            f"reslot {self.standing_budget} moves tonight by {self.standing_order}"
+        whatif = twin.whatif(state, levers, HORIZON, events)
+        ev_id = self._write_evidence("standing plan", levers, whatif, None)
+        self._refresh_board()
+        task = (f"Quiet day: no new events, no consequences, no drift flags, no inbox, yesterday's KPIs in band. "
+                f"The standing plan continues: {plan} (evidence `{ev_id}`). Write Megan's one-line standup "
+                'note (25 words or fewer). Reply JSON {"text": "..."}.')
+        note = self._ask(self.chair_id, Note, task, Note(text=f"Quiet day; standing plan continues: {plan}."),
+                         tier="nano")
+        text = " ".join(note.text.split())[:300] or f"Quiet day; standing plan continues: {plan}."
+        self.store.write_meeting(self.run_id, m.meeting_id, day, "quiet", [self.chair_id], ["standing plan"])
+        self._utter(self.chair_id, "decision", text, [ev_id])
+        self.store.set_meeting_outcome(self.run_id, m.meeting_id, f"standing plan: {plan}")
+        did = f"{self.run_id}-d{day}"
+        decision = Decision(decision_id=did, day=day, levers=[lv.model_copy(update={"decision_id": did}) for lv in levers],
+                            constraints=[], decided_by=self.chair_id, rationale=text, option_id=None,
+                            meeting_id=m.meeting_id)
+        self._attach(decision, whatif, False)
+        return decision
+
+    # ================================================================== store helpers
+    def _utter(self, role: str, kind: str, text: str, evidence_ids=(), option_id: str | None = None) -> None:
+        m = self._m
+        m.seq += 1
+        self.store.write_utterance(self.run_id, m.meeting_id, m.seq, role, kind, text,
+                                   [e for e in evidence_ids if e], option_id)
+
+    def _update_option(self, o: Option, **vals: Any) -> None:
+        upd = getattr(self.store, "update_option", None)
+        if callable(upd):
+            upd(self.run_id, o.option_id, **vals)
+
+    def _write_evidence(self, label: str, levers: list[c.Lever], whatif: WhatIf, option_id: str | None) -> str:
+        m = self._m
+        ev_id = f"ev-{self.run_id}-{m.day}-{self._evn}"
+        self._evn += 1
+        h = spec_hash(levers, m.day)
+        sc = score_whatif(whatif, m.ref, self.profile) if m.ref is not None else None
+        fe = feasibility(whatif, self.profile)
+        self.store.write_evidence(
+            self.run_id, ev_id, h, {"label": label, "option_id": option_id, "levers": levers, "horizon": HORIZON},
+            HORIZON, whatif.kpis_total,
+            scorecard={"score": sc.total if sc else None, "terms": sc.terms if sc else None,
+                       "feasible": fe.feasible, "breaches": fe.breaches,
+                       "expected_near_misses": whatif.expected_near_misses,
+                       "safety_risk_max": whatif.safety_risk_max, "pm_peak_zone_load": whatif.pm_peak_zone_load},
+            created_day=m.day)
+        self.last_spec_hashes.append(h)
+        self.known_evidence.add(ev_id)
+        self.evidence_rows.append(EvidenceRow.from_kpis(ev_id, label, whatif.kpis_total, whatif.expected_near_misses))
+        return ev_id
+
+    def _run_evidence(self, o: Option, twin: Any, state: Any, events: list[Event]) -> None:
+        o.whatif = twin.whatif(state, list(o.levers), HORIZON, events)
+        o.evidence_id = self._write_evidence(f"{o.option_id.rsplit('-', 1)[-1]} {o.label}", o.levers, o.whatif,
+                                             o.option_id)
+        o.score = score_whatif(o.whatif, self._m.ref, self.profile)
+        o.feas = feasibility(o.whatif, self.profile)
+        self._update_option(o, evidence_id=o.evidence_id, score=o.score.total, feasible=o.feas.feasible)
+
+    # ================================================================== propose
+    def _signals(self) -> str:
+        b = self.board
+        ev = [f"{k} day {d} {a}" for k, d, a in b.events] if b else []
+        return ("Events: " + ("; ".join(ev) or "none")
+                + f"\nStanding plan: reslot {self.standing_budget} moves/night by {self.standing_order}"
+                + (f" (paused until day {self.paused_until})" if self.paused_until >= self._day else ""))
+
+    def _lever_help(self, role_id: str) -> str:
+        kinds = self.roles[role_id].levers_can_propose
+        return "\n".join(f"- {LEVER_HELP[k].replace('<day>', str(self._day))}" for k in kinds) or "- (none)"
+
+    def _propose(self, day: int) -> None:
+        eng = self.engineer_id
+        task = (f"Propose exactly ONE option for tonight (day {day}).\n{self._signals()}\n\n"
+                f"Use only these levers (JSON shapes):\n{self._lever_help(eng)}\n\n"
+                'Reply JSON {"option_label": "...", "levers": [...], "rationale": "<= 60 words"}.')
+        fb = Proposal(option_label="standing plan", rationale="(fallback) standing plan continues",
+                      levers=[ReslotTonight(n_moves=self.standing_budget, order=self.standing_order)])
+        self._add_option(eng, self._ask(eng, Proposal, task, fb))
+
+        alts = [r for r in ("ops_manager", "safety", "quality") if r in self.present and r in self.roles]
+        first = self._m.active()[0] if self._m.active() else None
+        tabled = (f"The engineer tabled `{first.option_id}` {first.label}: "
+                  + ", ".join(lever_str(lv) for lv in first.levers)) if first else "No option tabled yet."
+
+        def ask_alt(rid: str) -> MaybeProposal:
+            t = (f"{tabled}\n{self._signals()}\n\nYou may add ONE alternative option, or none. Use only these "
+                 f"levers (JSON shapes):\n{self._lever_help(rid)}\n\n"
+                 'Reply JSON {"proposal": {"option_label": "...", "levers": [...], "rationale": "..."}} '
+                 'or {"proposal": null}.')
+            return self._ask(rid, MaybeProposal, t, MaybeProposal(proposal=None))
+
+        for rid, res in zip(alts, self._parallel(ask_alt, alts)):
+            if len(self._m.active()) >= MAX_OPTIONS:
+                break
+            if res.proposal is not None:
+                self._add_option(rid, res.proposal)
+        if len(self._m.active()) < 2:
+            self._add_option(self.chair_id, Proposal(option_label="pause reslot 1 day (code default)",
+                                                     levers=[PauseReslot(days=1)],
+                                                     rationale="Code-generated alternative so there is a choice."),
+                             check_authority=False)
+
+    def _new_option_id(self) -> str:
+        m = self._m
+        m.n_options += 1
+        return f"{m.meeting_id}-o{m.n_options}"
+
+    def _add_option(self, role_id: str, p: Proposal, check_authority: bool = True) -> Option | None:
+        levers = list(p.levers)
+        if check_authority:
+            levers, rejected = authority.filter_proposal(self.roles[role_id], levers)
+            for rj in rejected:
+                log.info("rejected lever %s from %s: %s", rj.lever.kind, role_id, rj.reason)
+                self._utter(role_id, "question", f"rejected lever {rj.lever.kind}: {rj.reason}")
+        if not levers:
+            self._utter(role_id, "question", f"option '{p.option_label}' dropped: no authorised levers")
+            return None
+        key = spec_hash(levers, self._day)
+        dup = next((o for o in self._m.active() if spec_hash(o.levers, self._day) == key), None)
+        if dup is not None:
+            self._utter(role_id, "question", f"option '{p.option_label}' is the same as {dup.option_id}; not added",
+                        option_id=dup.option_id)
+            return None
+        o = Option(option_id=self._new_option_id(), label=p.option_label[:80], levers=levers,
+                   proposed_by=role_id, rationale=p.rationale)
+        self._m.options.append(o)
+        self.store.write_option(self.run_id, self._m.meeting_id, o.option_id, o.levers, role_id)
+        self._utter(role_id, "proposal", f"{o.label}: {p.rationale}".strip()[:600], option_id=o.option_id)
+        return o
+
+    # ================================================================== positions
+    def _options_text(self, with_scores: bool = False) -> str:
+        m = self._m
+        lines = [f"REF `{m.ref_id}`: do nothing (the reference every option is scored against)"]
+        for o in m.active():
+            k = o.whatif.kpis_total if o.whatif else None
+            s = (f"- `{o.option_id}` \"{o.label}\" by {self.roles[o.proposed_by].name}: "
+                 + ", ".join(lever_str(lv) for lv in o.levers))
+            if k is not None:
+                s += (f" | evidence `{o.evidence_id}`: on_time {k.on_time_pct:.1f}%, mispick {k.mispick_rate:.2f}%, "
+                      f"lph {k.lph:.1f}, progress {k.reslot_progress_pct:.1f}%, cost ${k.labor_cost_usd:,.0f}, "
+                      f"exp near-misses {o.whatif.expected_near_misses:.2f}, safety_risk {o.whatif.safety_risk_max:.2f}")
+            s += " | feasible" if o.feasible else f" | INFEASIBLE {o.feas.breaches if o.feas else ''}"
+            if with_scores and o.score is not None:
+                s += f" | score {o.score.total:+.4f}"
+            if o.vetoed_by:
+                s += f" | VETOED by {self.roles[o.vetoed_by].name}"
+            if o.notes:
+                s += " | " + "; ".join(o.notes)
+            lines.append(s)
+        return "\n".join(lines)
+
+    def _default_option(self) -> Option | None:
+        act = self._m.active()
+        return next((o for o in act if o.proposed_by == self.engineer_id), act[0] if act else None)
+
+    def _fallback_position(self) -> Position:
+        o = self._default_option()
+        return Position(option_id=o.option_id if o else "", stance="support", rationale="(fallback)",
+                        evidence_ids=[o.evidence_id] if o and o.evidence_id else [])
+
+    def _position_error(self, p: Position) -> str | None:
+        if self._m.get(p.option_id) is None:
+            return f"unknown option_id {p.option_id!r}"
+        if not p.evidence_ids:
+            return "no evidence_ids cited"
+        bad = [e for e in p.evidence_ids if e not in self.known_evidence]
+        if bad:
+            return f"unknown evidence ids {bad}"
+        return None
+
+    def _position(self, role_id: str) -> tuple[str, Position, Veto | Lock | None]:
+        role = self.roles[role_id]
+        if role.power == "veto":
+            schema, wrap = SafetyReply, (lambda p: SafetyReply(position=p, veto=None))
+            extra_help = ('Reply JSON {"position": {...}, "veto": null} or with "veto": {"option_id": "...", '
+                          '"rule": "...", "evidence_ids": ["..."]}. Veto only an option whose what-if breaches '
+                          "a safety limit or raises risk vs REF.")
+        elif role.power == "lock":
+            schema, wrap = QualityReply, (lambda p: QualityReply(position=p, lock=None))
+            extra_help = ('Reply JSON {"position": {...}, "lock": null} or with "lock": {"target": '
+                          '"zone|skus|customer", "ids": ["..."], "days": 1-3, "reason": "..."}.')
+        else:
+            schema, wrap = Position, (lambda p: p)
+            extra_help = "Reply JSON with the Position fields only."
+        known = sorted(self.known_evidence & {o.evidence_id for o in self._m.active()} | {self._m.ref_id})
+        task = (f"## Options on the table (3-day what-ifs on forecast demand)\n{self._options_text()}\n\n"
+                "Give your position on the ONE option that matters most to your KPIs: "
+                '{"option_id": "...", "stance": "support|oppose|amend", "amendment": null or [levers], '
+                '"rationale": "<= 60 words", "evidence_ids": ["..."]}. '
+                f"Cite at least one evidence id from: {', '.join(known)}. An amendment may use only your levers:\n"
+                f"{self._lever_help(role_id)}\n{extra_help}")
+        fb_pos = self._fallback_position()
+        out = self._ask(role_id, schema, task, wrap(fb_pos))
+        pos = out if schema is Position else out.position
+        err = self._position_error(pos)
+        if err:
+            out = self._ask(role_id, schema, task + f"\n\nYour previous answer was rejected ({err}). "
+                            "Cite evidence or support: use only the evidence ids listed above.", wrap(fb_pos))
+            pos = out if schema is Position else out.position
+            err = self._position_error(pos)
+            if err:
+                self._log_fallback(role_id, f"position rejected twice: {err}")
+                return role_id, fb_pos, None
+        extra = getattr(out, "veto", None) if schema is SafetyReply else getattr(out, "lock", None) \
+            if schema is QualityReply else None
+        return role_id, pos, extra
+
+    def _record_position(self, day: int, role_id: str, p: Position) -> None:
+        self._m.positions[role_id] = p
+        text = f"{p.stance}: {p.rationale}"
+        if p.stance == "amend" and p.amendment:
+            text += " | amendment: " + ", ".join(lever_str(lv) for lv in p.amendment)
+        self._utter(role_id, "position", text[:800], p.evidence_ids, p.option_id)
+        self.stances.add(role_id, day, p.option_id, p.stance, p.rationale)
+
+    def _handle_veto(self, role_id: str, v: Veto) -> None:
+        o, ref = self._m.get(v.option_id), self._m.ref
+        evid = [e for e in v.evidence_ids if e in self.known_evidence]
+        if o is None or o.whatif is None:
+            self._utter(role_id, "veto", f"veto on {v.option_id} overruled: unknown option", evid)
+            return
+        if not authority.veto_allowed(self.roles[role_id]):
+            self._utter(role_id, "veto", f"veto on {o.option_id} overruled: {role_id} has no veto power", evid,
+                        o.option_id)
+            return
+        breach = (not o.feasible
+                  or o.whatif.safety_risk_max > ref.safety_risk_max + EPS
+                  or o.whatif.expected_near_misses > ref.expected_near_misses + EPS)
+        if breach:
+            o.vetoed_by = role_id
+            self._utter(role_id, "veto", f"veto {o.option_id}: {v.rule}"[:600], evid or [o.evidence_id], o.option_id)
+        else:
+            self._utter(role_id, "veto", f"veto on {o.option_id} ({v.rule}) overruled: no evidence of breach"[:600],
+                        evid or [o.evidence_id], o.option_id)
+
+    def _handle_lock(self, role_id: str, lk: Lock) -> None:
+        role = self.roles[role_id]
+        if not authority.lock_allowed(role, lk.days):
+            self._utter(role_id, "lock", f"lock {lk.target} {lk.ids} for {lk.days}d not applied: "
+                        f"locks over 3 days need the chair ({lk.reason})"[:600])
+            return
+        try:
+            pr = Protect(target=lk.target, ids=[str(i) for i in lk.ids], days=lk.days)
+        except ValidationError as e:
+            self._utter(role_id, "lock", f"lock not applied: invalid ({str(e)[:200]})")
+            return
+        self._m.lock_levers.append(pr)
+        for o in self._m.active():
+            if pr not in o.levers:
+                o.levers = list(o.levers) + [pr]
+                self._update_option(o, levers=o.levers)
+        self._utter(role_id, "lock", f"lock {lk.target} {', '.join(pr.ids)} for {lk.days}d: {lk.reason}"[:600])
+
+    # ================================================================== amend
+    @staticmethod
+    def _merge(base: list[c.Lever], amendment: list[c.Lever]) -> list[c.Lever]:
+        out = list(base)
+        for lv in amendment:
+            idx = [i for i, x in enumerate(out) if x.kind == lv.kind]
+            if idx:
+                out[idx[0]] = lv
+                out = [x for i, x in enumerate(out) if i not in idx[1:]]
+            else:
+                out.append(lv)
+        return out
+
+    def _amend(self, twin: Any, state: Any, events: list[Event]) -> None:
+        m = self._m
+        created: list[Option] = []
+        for role_id in sorted(m.positions):
+            p = m.positions[role_id]
+            if p.stance != "amend" or not p.amendment:
+                continue
+            base = m.get(p.option_id)
+            if base is None:
+                continue
+            kept, rejected = authority.filter_proposal(self.roles[role_id], list(p.amendment))
+            for rj in rejected:
+                self._utter(role_id, "question", f"rejected lever {rj.lever.kind}: {rj.reason}", option_id=base.option_id)
+            if not kept:
+                continue
+            levers = self._merge(base.levers, kept)
+            if any(spec_hash(o.levers, m.day) == spec_hash(levers, m.day) for o in m.active()):
+                continue
+            if len(m.active()) >= MAX_OPTIONS:
+                victims = [o for o in m.active() if o.proposed_by != self.engineer_id and o not in created]
+                if not victims:
+                    self._utter(role_id, "question", "amendment dropped: option cap reached", option_id=base.option_id)
+                    continue
+                victim = min(victims, key=lambda o: (o.total, o.option_id))
+                victim.replaced = True
+                self._utter(self.chair_id, "question", f"{victim.option_id} replaced by an amendment from "
+                            f"{self.roles[role_id].name} (cap {MAX_OPTIONS} options)", option_id=victim.option_id)
+            o = Option(option_id=self._new_option_id(), label=f"{base.label} (amended by {self.roles[role_id].name})"[:80],
+                       levers=levers, proposed_by=role_id, rationale=p.rationale)
+            m.options.append(o)
+            created.append(o)
+            self.store.write_option(self.run_id, m.meeting_id, o.option_id, o.levers, role_id)
+            self._utter(role_id, "proposal", f"amend {base.option_id}: " + ", ".join(lever_str(x) for x in kept),
+                        p.evidence_ids, o.option_id)
+            self._run_evidence(o, twin, state, events)
+
+    def _overtime_remaining(self, day: int) -> float:
+        budget = float(self.profile.budgets.get("overtime_hours_per_week", math.inf))
+        return budget - self.overtime_used.get((day - 1) // 7, 0.0)
+
+    def _capacity_check(self, day: int) -> None:
+        """Shift Lead's capacity truth: overtime beyond the remaining weekly budget needs the director."""
+        rem = self._overtime_remaining(day)
+        for o in self._m.active():
+            hours = sum(lv.hours for lv in o.levers if lv.kind == "overtime")
+            if hours > rem + EPS:
+                note = f"needs director: overtime {hours:g}h > {rem:g}h remaining this week"
+                if note not in o.notes:
+                    o.notes.append(note)
+
+    # ================================================================== decide
+    def _positions_text(self) -> str:
+        rows = [f"- {self.roles[r].name} ({r}): {p.stance} {p.option_id} - {p.rationale[:160]}"
+                for r, p in sorted(self._m.positions.items())]
+        return "\n".join(rows) or "- (none)"
+
+    def _chair_decide(self, day: int) -> tuple[Option, str, list[str], bool, list[str]]:
+        m = self._m
+        act = m.active()
+        non_vetoed = [o for o in act if not o.vetoed_by]
+        eligible = [o for o in non_vetoed if o.feasible]
+        ranked = sorted(eligible, key=lambda o: (-o.total, o.option_id))
+        top = ranked[0] if ranked else None
+        pause = next((o for o in act if o.levers and all(lv.kind == "pause_reslot" for lv in o.levers)), None)
+        fb_opt = pause or top or (act[0] if act else None)
+        task = (f"## Options (code-computed scores under profile {self.profile.id}; 3-day what-ifs)\n"
+                f"{self._options_text(with_scores=True)}\n\n## Positions\n{self._positions_text()}\n\n"
+                "Pick one option. Rules: a vetoed or infeasible option cannot be chosen; picking a feasible option "
+                "other than the top score needs a rationale (logged as a deviation); escalate to the Director when "
+                "every option is vetoed or infeasible, the top two are within 2%, or a lever needs budget approval.\n"
+                'Reply JSON {"option_id": "...", "escalate": false, "rationale": "<= 60 words", "evidence_ids": ["..."]}.')
+        fb = ChairDecision(option_id=fb_opt.option_id if fb_opt else None, escalate=False,
+                           rationale="(fallback) pause reslot" if fb_opt is pause and pause else "(fallback)",
+                           evidence_ids=[fb_opt.evidence_id] if fb_opt and fb_opt.evidence_id else [])
+        dec = self._ask(self.chair_id, ChairDecision, task, fb, tier="ultra", reasoning=True, max_tokens=1500)
+        rationale = (dec.rationale or "").strip()
+        reasons: list[str] = []
+        deviates = False
+        if dec.escalate:
+            reasons.append("chair escalates")
+        if not non_vetoed:
+            reasons.append("every option vetoed")
+            chosen = act[least_bad([o.feas for o in act])]
+        elif not eligible:
+            reasons.append("every option infeasible: least-bad taken")
+            chosen = non_vetoed[least_bad([o.feas for o in non_vetoed])]
+        else:
+            pick = m.get(dec.option_id)
+            if pick is None or pick not in eligible:
+                if dec.option_id:
+                    self._utter(self.chair_id, "question", f"pick {dec.option_id} is not allowed (vetoed, infeasible "
+                                "or unknown); taking the top score", option_id=dec.option_id)
+                chosen = top
+            elif pick is not top and not rationale:
+                chosen = top
+            else:
+                chosen = pick
+            deviates = chosen is not top
+            if len(ranked) >= 2:
+                s1, s2 = ranked[0].total, ranked[1].total
+                if abs(s1 - s2) <= TIE_FRACTION * max(abs(s1), abs(s2), TIE_FLOOR):
+                    reasons.append(f"top-2 scores within 2% ({s1:+.4f} vs {s2:+.4f})")
+        plan = authority.commit_plan(chosen.levers, self.roles, self.present, self._overtime_remaining(day))
+        if plan.escalate:
+            reasons.append("a lever needs the director")
+        if not rationale:
+            rationale = f"Top score under {self.profile.id}: {chosen.option_id}."
+        chair_ev = [e for e in dec.evidence_ids if e in self.known_evidence]
+        return chosen, rationale, reasons, deviates, chair_ev
+
+    def _escalate(self, day: int, chosen: Option, rationale: str, reasons: list[str]) -> tuple[Option, str, str]:
+        m = self._m
+        dir_id = self.director_id
+        self._utter(self.chair_id, "question", f"escalating to {self.roles[dir_id].name}: " + "; ".join(reasons)
+                    + f". Provisional choice {chosen.option_id}: {rationale}"[:600], [chosen.evidence_id],
+                    chosen.option_id)
+        trigger = "veto_deadlock" if "every option vetoed" in reasons else "chair_escalates"
+        self._hire(day, dir_id, trigger)
+        self._refresh_board()
+        locks = ", ".join(lever_str(lv) for lv in m.lock_levers) or "none"
+        task = (f"## Escalation\nReasons: {'; '.join(reasons)}\nChair's provisional choice: {chosen.option_id} "
+                f"({rationale})\nQuality locks in force: {locks}\n\n## Options\n{self._options_text(with_scores=True)}"
+                f"\n\n## Positions\n{self._positions_text()}\n\nRule on it. You may choose any option (you may override a "
+                "veto), override a lock, or set the profile (customer_first | efficiency_first). "
+                'Reply JSON {"option_id": "..." or null, "set_profile": null, "override_lock": null, "rationale": "..."}.')
+        fb = DirectorRuling(option_id=chosen.option_id, set_profile=None, override_lock=None,
+                            rationale="(fallback) the chair's choice stands")
+        ruling = self._ask(dir_id, DirectorRuling, task, fb, tier="ultra", reasoning=True, max_tokens=1500)
+        pick = m.get(ruling.option_id) if ruling.option_id else None
+        if ruling.option_id and pick is None:
+            self._utter(dir_id, "question", f"ruling names unknown option {ruling.option_id}; chair's choice stands")
+        elif pick is not None:
+            if not pick.feasible and any(o.feasible for o in m.active()):
+                self._utter(dir_id, "question", f"{pick.option_id} breaches a hard limit while a feasible option "
+                            "exists; chair's choice stands", [pick.evidence_id], pick.option_id)
+            else:
+                chosen = pick
+        if ruling.override_lock:
+            if m.lock_levers:
+                chosen = Option(**{**chosen.__dict__, "levers": [lv for lv in chosen.levers if lv not in m.lock_levers]})
+                self._utter(dir_id, "lock", f"director overrides the lock: {ruling.override_lock}"[:600],
+                            option_id=chosen.option_id)
+            else:
+                log.info("override_lock %r ignored: no lock in force", ruling.override_lock)
+        if ruling.set_profile:
+            text = (f"Director set_profile {ruling.set_profile} on day {day} (recorded; profile switching "
+                    "mid-run is not applied)")
+            self.agreements.append(text)
+            try:
+                self.store.write_agreement(self.run_id, f"{self.run_id}-a{day}-profile", text,
+                                           [dir_id, self.chair_id], day)
+            except Exception:  # noqa: BLE001
+                log.exception("could not write agreement")
+        return chosen, (ruling.rationale or rationale).strip(), dir_id
+
+    # ================================================================== commit
+    def _commit(self, day: int, chosen: Option, rationale: str, decided_by: str, deviates: bool,
+                chair_ev: list[str], reasons: list[str]) -> Decision:
+        m = self._m
+        levers = list(chosen.levers)
+        rem = self._overtime_remaining(day)
+        plan = authority.commit_plan(levers, self.roles, self.present, rem)
+        for rid in plan.hires:
+            mine = [lv for lv in levers
+                    if authority.issuer_for(lv, self.roles, self.present, rem).needs_hire == rid]
+            self._hire(day, rid, "commit: issue " + ", ".join(sorted({lv.kind for lv in mine})))
+            task = (f"The chair approved {chosen.option_id} \"{chosen.label}\". You are asked to issue: "
+                    + ", ".join(lever_str(lv) for lv in mine)
+                    + '. Accept or refuse with a reason. Reply JSON {"accept": true|false, "reason": "..."}.')
+            acc = self._ask(rid, Accept, task, Accept(accept=True, reason="(fallback) accepted"))
+            if acc.accept:
+                self._utter(rid, "position", f"accepts to issue {', '.join(lv.kind for lv in mine)}: {acc.reason}"[:600],
+                            [chosen.evidence_id], chosen.option_id)
+            else:
+                levers = [lv for lv in levers if not any(lv is x for x in mine)]
+                self._utter(rid, "question", f"refuses to issue {', '.join(lv.kind for lv in mine)}: {acc.reason}"[:600],
+                            [chosen.evidence_id], chosen.option_id)
+        plan = authority.commit_plan(levers, self.roles, self.present, rem)
+        issued = {id(lv) for lv, _ in plan.issuable}
+        for lv, why in zip(levers, plan.reasons):
+            if id(lv) not in issued:
+                self._utter(self.chair_id, "question", f"dropped {lever_str(lv)}: {why}"[:600], option_id=chosen.option_id)
+        final = [lv for lv, _ in plan.issuable]
+
+        did = f"{self.run_id}-d{day}"
+        stamped = [lv.model_copy(update={"decision_id": did}) for lv in final]
+        decision = Decision(decision_id=did, day=day, levers=stamped, constraints=[], decided_by=decided_by,
+                            rationale=rationale[:1000], option_id=chosen.option_id, meeting_id=m.meeting_id)
+        self._attach(decision, chosen.whatif, deviates)
+        ev = [chosen.evidence_id] + [e for e in chair_ev if e != chosen.evidence_id]
+        self._utter(decided_by, "decision", f"{chosen.option_id}: {rationale}"[:800], ev, chosen.option_id)
+        outcome = f"{chosen.option_id} {chosen.label} (decided by {self.roles[decided_by].name}"
+        outcome += "; escalated: " + "; ".join(reasons) + ")" if reasons else ")"
+        if deviates:
+            outcome += " [deviates from top score]"
+        self.store.set_meeting_outcome(self.run_id, m.meeting_id, outcome[:1000])
+
+        # run-state updates
+        for lv in final:
+            if lv.kind == "reslot_tonight":
+                self.standing_budget, self.standing_order = lv.n_moves, lv.order
+            elif lv.kind == "pause_reslot":
+                self.paused_until = max(self.paused_until, day + lv.days - 1)
+            elif lv.kind == "overtime":
+                wk = (day - 1) // 7
+                self.overtime_used[wk] = self.overtime_used.get(wk, 0.0) + lv.hours
+        return decision
+
+    def _attach(self, decision: Decision, whatif: WhatIf | None, deviates: bool) -> None:
+        """`decision.predicted` (first what-if day) and `decision.deviates_from_top_score` as plain
+        attributes outside the pydantic fields (see module docstring)."""
+        self.last_whatif = whatif
+        self.last_deviates = deviates
+        pred = (whatif.kpis_by_day[0] if whatif.kpis_by_day else whatif.kpis_total) if whatif else None
+        object.__setattr__(decision, "predicted", pred)
+        object.__setattr__(decision, "deviates_from_top_score", deviates)
+
+    # ================================================================== triage helpers
+    def _code_agenda(self, new_events, violations, drift, inbox) -> list[str]:
+        items = [f"{e.kind} (day {e.day})" for e in new_events]
+        items += [f"KPI out of band: {v}" for v in violations] + [f"drift: {d}" for d in drift]
+        items += [f"inbox: {t[:80]}" for t in inbox]
+        return items[:6] or ["review standing plan"]
+
+    def _triage_task(self, new_events, violations, drift, inbox, fired) -> str:
+        callable_roles = sorted(r for r, role in self.roles.items()
+                                if role.attends == "on_trigger" and r not in self.present and r != self.director_id)
+        return ("Not a quiet day. Signals:\n"
+                f"- new or announced events: {', '.join(f'{e.kind} day {e.day} {e.args}' for e in new_events) or 'none'}\n"
+                f"- yesterday KPIs out of band: {', '.join(violations) or 'none'}\n"
+                f"- drift flags: {'; '.join(drift) or 'none'}\n- inbox: {'; '.join(inbox) or 'none'}\n"
+                f"- code hired on triggers: {', '.join(f'{r} ({t})' for r, t in sorted(fired.items())) or 'none'}\n"
+                f"- on-call roles you may also call in: {', '.join(callable_roles) or 'none'}\n\n"
+                "Set the agenda (at most 4 short items). "
+                'Reply JSON {"meeting": true, "agenda": ["..."], "hire": [{"role": "...", "trigger": "..."}], '
+                '"release": []}.')

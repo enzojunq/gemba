@@ -505,3 +505,24 @@ def _sqlite_pragmas(dbapi_conn, _record) -> None:
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")  # the console tails runs.db while the engine writes
     cur.close()
+
+
+# --- added by standup lane (org/standup.py) ------------------------------------------------
+_OPTION_UPDATABLE = ("levers", "evidence_id", "score", "feasible", "vetoed_by")
+
+
+def _update_option(self: RunStore, run_id: str, option_id: str, conn: Connection | None = None,
+                   **vals: Any) -> None:
+    """Update an `options` row in place (the standup writes it at PROPOSE, then fills evidence,
+    score, feasibility, veto and lock levers). Only the columns in `_OPTION_UPDATABLE`."""
+    bad = set(vals) - set(_OPTION_UPDATABLE)
+    if bad:
+        raise ValueError(f"update_option: not updatable {sorted(bad)}")
+    if not vals:
+        return
+    row = {k: (dumps(v) if k in JSON_COLS else v) for k, v in vals.items()}
+    with self._tx(conn) as cx:
+        cx.execute(update(options).where(options.c.run_id == run_id, options.c.option_id == option_id).values(**row))
+
+
+RunStore.update_option = _update_option

@@ -99,7 +99,23 @@ One section per phase: what was built, how it is tested, what is pending. Update
 **Known gap:** `final.score >= 0` is weaker than "at least static rules" because `reslot_progress_pct` is scored with REF = 0 (a run scored against itself is not 0). Resolve in the eval harness (B10) by reporting score deltas between contenders rather than through this check.
 
 **Integration notes for A (CONTRACT section 4):** expose `floor/twin.py` with `make_twin()` or `Twin()`; `engine.run` picks it up automatically.
-## Phase 3 - standup / OrgPolicy, board, Event Interpreter (B8) - in progress (lane 6)
+## Phase 3 - standup / OrgPolicy, board, Event Interpreter (B8) - done 12:40
+
+**Built**
+- `org/standup.py`: `OrgPolicy` (a `DecisionPolicy`) running the spec 10.5 ritual in order: BRIEF (code builds the board) -> TRIAGE (code decides quiet days and hires; chair sets the agenda) -> PROPOSE (engineer + up to 2 alternatives, max 3 options, unauthorized levers filtered and logged) -> EVIDENCE (`twin.whatif` per option + do-nothing REF, evidence ids, spec hashes for the drift detector) -> POSITIONS (parallel, 4 threads; evidence ids validated, re-ask once, then safe default; Safety veto honoured only if the what-if shows a breach; Quality lock becomes a `protect` lever on every option; Shift Lead capacity truth) -> AMEND (1 round) -> SCORE (code, 10.4 formula + feasibility) -> DECIDE (chair, reasoning on; vetoed/infeasible options blocked; deviation from top score needs a rationale; tie within 2% / all vetoed / director lever -> ESCALATE to Dana) -> COMMIT (authority matrix: issuer per lever, absent owner hired and asked to accept, decision_id stamped). Quiet day = one Nano call for Megan's note + the standing plan. `pick_thresholds` = one chair call clamped to the template bounds. `decision.predicted` (first-day `Kpis` of the chosen what-if) is attached for the drift detector. `tier_for` maps ultra -> super while `MODEL_ULTRA` is empty.
+- `org/board.py`: the Shared Brain snapshot (floor view, yesterday actual vs predicted, visible events, constraints/locks, last 5 evidence rows, inbox, who is in the room, drift flags) rendered under ~1,500 tokens; `StanceMemory` keeps each role's last 3 positions.
+- `org/interpreter.py`: Event Interpreter (Nano) turning inbox text into a validated `Event` (args checked against `EVENT_ARGS`, confidence >= 0.5). Wired into `engine/events.parse_inbox` when the policy has an LLM.
+- `org/playbook_select.py`: `select_rules` by role and tag overlap (max 5), used for playbook v1+.
+- Store: `update_option` for scores/feasibility/vetoes.
+
+**Tests** - `tests/test_standup.py` (15, one live), `tests/test_board.py` (4), `tests/test_interpreter.py` (5) - suite total 142 + 1 live
+- Fake-LLM tests (a scripted test double for the client, not a product mock): quiet day = exactly 1 LLM call and the standing plan; rack damage day hires Safety, produces >= 2 options with evidence, positions cite evidence ids, decision is feasible; unauthorized lever rejected and logged; bogus evidence id re-asked then fallback; veto on a breaching option blocks it; all-infeasible -> least_bad + escalation; quality lock adds `protect`; `predicted` readable; determinism with identical answers.
+- Board snapshot stays under 1,500 tokens with 50 evidence rows and 30 events. Interpreter: valid parse, low confidence -> None.
+- **Live test (GEMBA_LIVE=1, Crusoe):** one standup on the stub at day 66 with rack damage: 8 LLM calls, 0 fallbacks, 16.9 s wall (23.1 s summed, positions parallel), **$0.0066**. Luke proposed reslotting despite the damage, Sam proposed `close_aisle(5, 2d)`, positions 2 oppose / 1 support all citing evidence, Megan chose the close and Sam issued it.
+
+**Resolutions:** tie = within 2% of the larger score (floor 0.01); a `director_escalation` event always routes to Dana; Dana may pick a vetoed option (override) but never an infeasible one while a feasible exists; a lock's `protect` is added after evidence without re-running what-ifs; inbox events are effective the same day.
+
+**Known:** on the stub, a 200-move night pushes mis-picks to ~0.53% (> 0.5 target), so the following day is never quiet. Stub calibration, not standup logic; the real twin decides this.
 ## Integration with A at 13:00 - not started
 ## Phase 4 - hero run, recordings, eval table (B10) - not started
 ## Phase 5 - retro coach, playbook, gate (B11) - not started

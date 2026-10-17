@@ -43,8 +43,11 @@ def build_calendar(scenario: c.Scenario, run_id: str) -> list[c.Event]:
     return out
 
 
-def parse_inbox(text: str, *, run_id: str = "", day: int = 0) -> c.Event | None:
-    """Inbox text -> Event. Hook for the Event Interpreter lane (org/); until it lands this
-    logs the message and returns None (the message is consumed but has no effect)."""
-    log.info("inbox message ignored (no Event Interpreter yet) run=%s day=%s: %r", run_id, day, text)
-    return None
+def parse_inbox(text: str, *, run_id: str = "", day: int = 0, llm=None) -> c.Event | None:
+    """Inbox text -> Event via the Event Interpreter (org/interpreter.py, Nano). Baseline
+    policies carry no LLM, so without one the message is consumed, logged and has no effect."""
+    if llm is None:
+        log.info("inbox message ignored (policy has no LLM) run=%s day=%s: %r", run_id, day, text)
+        return None
+    from org.interpreter import parse_inbox as _interpret  # lazy: engine must import without org
+    return _interpret(llm, text, day, run_id)

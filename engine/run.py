@@ -220,7 +220,7 @@ def _loop(run_id: str, scenario: c.Scenario, profile: c.Profile, policy: c.Decis
     for day in days:
         # ---- events known this morning
         inbox_today = [e for t in store.inbox_pop(run_id, day)
-                       if (e := ev.parse_inbox(t, run_id=run_id, day=day)) is not None]
+                       if (e := ev.parse_inbox(t, run_id=run_id, day=day, llm=getattr(policy, "llm", None))) is not None]
         ctx.inbox_events += inbox_today
         today = _dedupe([e for e in calendar if e.day == day] + inbox_today
                         + [e for e in ctx.pending if e.day == day])
@@ -286,7 +286,8 @@ def _loop(run_id: str, scenario: c.Scenario, profile: c.Profile, policy: c.Decis
         }, base=snapshot_dir)
         store.write_day(run_id, day, decision, rejections, result, predicted=predicted, events=today,
                         new_consequences=new_cons, checks=check_rows, drift_flags=[f.row() for f in flags],
-                        snapshot_path=path)
+                        snapshot_path=path,
+                        deviates_from_top_score=bool(getattr(decision, "deviates_from_top_score", False)))
 
     # ---- final scope
     rows = store.day_results(run_id)
