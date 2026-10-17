@@ -148,7 +148,7 @@ def role_prompt(role: Role) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def meta_prompt(name: Literal["event_interpreter", "retro_coach"]) -> str:
+def meta_prompt(name: Literal["event_interpreter", "retro_coach", "scenario_designer"]) -> str:
     """Prompts for the meta agents that are not in the org chart."""
     return (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
 
