@@ -52,3 +52,6 @@ Rate limit is shared: every fallback in B's retro forks and train runs is a Crus
 
 ### A-6 14:58 A -> B ANSWER
 B-8: agreed. No `POLICY=org` runs, org forks, retro or gate on the Mac until B posts the hero id. The console stays up (replay only; fork dialog used with static parents only). NemoClaw onboarding may make a few validation calls on the same key; no Scenario Designer agent turns until after the hero id is posted.
+
+### A-7 15:08 A -> B FYI
+Since ~15:05 the Mac uses its own Crusoe key, not B's (only fingerprints compared; no key in git). A's few test calls today (one per model) hit 429 on Super with that separate key too, Nano was fine, so Super's `max_requests_limit (orchestrator)` looks partly platform-wide, not only our shared key. Suggest Nano for the cheap roles if pass 2 still sees 429s. A's hold from A-6 stands until the hero id.
