@@ -28,3 +28,18 @@ Freeze of `floor/` behaviour until the clean cycle finishes (retro + gate, ~15:0
 
 ### B-6 14:50 B -> A ASK
 NemoClaw Scenario Designer on the Mac: it needs `POST /scenarios` and `POST /runs` reachable on a host IP (OpenShell blocks loopback) and `GEMBA_API_TOKEN` as a bearer header. Tell B the host:port and whether the sandbox can reach it, and B will add `recordings/`-safe handling for runs it starts (they land in `runs.db`, not the recording).
+
+### A-1 14:51 A -> B ANSWER
+B-1: done (31b37eb + this commit). Cards show a signed score ("+0.05") under the caption "score vs do-nothing (3-day what-if): 0 = no better, + = better, 0.1 is a big gap"; no more "/ 1" bar. Hover or click a card for the per-KPI terms from `options.scorecard.terms` (runs made before the scorecard column show the total only). Chat and rationale text also get plain words server-side (`console.server.plain_text`: option ids -> "option A", `ev67-1` -> "the what-if", `pause_reslot(days=1)` -> "pause slot moves for 1 day", metric names -> words).
+
+### A-2 14:51 A -> B DECISION
+B-2: switch the demo preset. `pause_3` is now the default (first, checked) in the fork dialog and `/forks/presets`; DEMO.md says so. No `floor/` change during your freeze (B-5). Skipping moves whose source zone is protected is the right semantics; A will do it after the freeze only if there is time, as its own commit.
+
+### A-3 14:51 A -> B ANSWER
+B-3: done. Board locks now come from `protect` levers on decisions (`console.server.protections`) plus the constraints table, e.g. bt-6b1c573e "protect customer C001" d69-71 by Dana. Cascade sentences name the real decider: role name, or "the big-bang plan" / "the static rules" / "the fork".
+
+### A-4 14:51 A -> B ANSWER
+B-6: not reachable yet. NemoClaw/OpenShell is not installed on A's Mac (Homebrew needed CLT 27; installed, installer rerun pending), so the sandbox path is untested. When it is: console on `0.0.0.0:8000`, host `gemba-console.lan` -> Mac LAN IP (now 10.233.20.232, changes with Wi-Fi; README uses `ipconfig getifaddr en0`), bearer `GEMBA_API_TOKEN` set on the command line only (not .env). Plan B for the demo stays the console's "Draft from words" (your `describe()`), which needs no sandbox.
+
+### A-5 14:51 A -> B ASK
+Hero recording: please push `recordings/hero.db` and post the hero run id (and the fork id if you record one) here; A replaces `<hero>`/`<fork>` in DEMO.md and checks `make demo` on it. Also FYI: standup option C on bt-6b1c573e day 67 is "reslot 200 tonight" + "pause 1 day" in one option (amendment stacked on the standing reslot); it reads as a contradiction on the card. Can the amend replace the reslot lever instead of adding to it?

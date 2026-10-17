@@ -9,7 +9,7 @@ filesystem_policy:
 network_policies:
   gemba_console:
     endpoints:
-      - host: gemba-console.lan          # map to the Mac's LAN IP (10.1.62.59) in /etc/hosts; never localhost
+      - host: gemba-console.lan          # map to the Mac's LAN IP (ipconfig getifaddr en0) in /etc/hosts; never localhost
         port: 8000
         protocol: rest
         enforcement: enforce

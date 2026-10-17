@@ -5,7 +5,7 @@ Files the sandbox needs (design in `META_HARNESS.md`):
 - `openshell-policy.yaml`: network + filesystem policy; apply with `openshell policy set`.
 
 Host side, in this order:
-1. `echo "10.1.62.59 gemba-console.lan" | sudo tee -a /etc/hosts` (use the Mac's current LAN IP).
+1. `echo "$(ipconfig getifaddr en0) gemba-console.lan" | sudo tee -a /etc/hosts` (the Mac's LAN IP changes with the network; redo this after switching Wi-Fi).
 2. `GEMBA_API_TOKEN=<token> uv run uvicorn console.server:app --host 0.0.0.0 --port 8000`
 3. In the sandbox env: `GEMBA_URL=http://gemba-console.lan:8000`, `GEMBA_TOKEN=<token>`.
 4. `nemoclaw launch gemba-designer`, then ask: "rehearse a peak week with 20% absences on nights, static policy".

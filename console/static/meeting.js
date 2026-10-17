@@ -273,7 +273,7 @@ export class Room {
     wrap.className = "options";
     const cap = document.createElement("div");
     cap.className = "options-cap";
-    cap.textContent = "Options · score vs doing nothing for 3 days (0 = no better, + = better)";
+    cap.textContent = "Options · score vs do-nothing (3-day what-if): 0 = no better, + = better, 0.1 is a big gap";
     wrap.appendChild(cap);
     const pick = decision && decision.option_id;
     for (const o of options) {
@@ -288,7 +288,9 @@ export class Room {
         <span class="opt-levers">${esc(o.effect || (o.lever_labels || []).join(" · "))}</span>
         ${o.vetoed_by ? `<span class="opt-stamp" aria-hidden="true">VETOED by ${esc(o.vetoed_by)}</span>` : ""}
         <span class="opt-detail" hidden>${esc((o.lever_labels || []).join(" · "))}${o.evidence_id ? " · checked with a what-if" : ""}</span>`;
-      d.title = `${o.label} · ${o.proposed_by} · ${(o.lever_labels || []).join("; ")} · click for details`;
+      const terms = termsText(o.scorecard);
+      if (terms) d.querySelector(".opt-detail").textContent += ` · ${terms}`;
+      d.title = `${o.label} · ${o.proposed_by} · ${(o.lever_labels || []).join("; ")}${terms ? ` · ${terms}` : ""} · click for details`;
       d.addEventListener("click", () => { d.classList.toggle("is-open"); const det = d.querySelector(".opt-detail"); det.hidden = !d.classList.contains("is-open"); });
       wrap.appendChild(d);
     }
@@ -333,6 +335,13 @@ function quietWhy(b) {
   if ((b.drift || []).length) parts.push("forecast drift flagged");
   return parts.join(" · ");
 }
+const TERM_LABEL = { on_time_pct: "on-time", mispick_rate: "mis-picks", lph: "lines/hour", reslot_progress_pct: "reslot progress", labor_cost_usd: "labor cost" };
+function termsText(sc) {
+  const t = sc && sc.terms;
+  if (!t) return "";
+  return Object.entries(t).filter(([, v]) => v != null && Math.abs(v) >= 0.005).map(([k, v]) => `${TERM_LABEL[k] || k} ${fmtScore(v)}`).join(", ") || "all terms ±0.00";
+}
+
 function fmtScore(v) {
   if (v == null) return "—";
   const r = Math.round(v * 100) / 100;

@@ -147,6 +147,29 @@ def role_name(x: str | None) -> str:
     return role_of(x)["name"] if x else ""
 
 
+_DECIDER = {"big_bang": "the big-bang plan", "static": "the static rules", "do_nothing": "the do-nothing plan", "fork": "the fork"}
+
+
+def decider_name(x: str | None) -> str:
+    """Who decided, for sentences: a role's first name, or the baseline that stands in for the org."""
+    return _DECIDER.get(x or "") or role_name(x) or "the chair"
+
+
+def protections(run_id: str) -> list[dict]:
+    """Locks are `protect` levers on decisions (Ellen's C001 week, zone protection), not constraint rows."""
+    out = []
+    for d in store().decisions(run_id):
+        for i, lv in enumerate(d["levers"] or []):
+            if (lv or {}).get("kind") != "protect":
+                continue
+            days = int(lv.get("days") or 1)
+            what = {"customer": "customer", "sku": "SKU", "zone": "zones", "aisle": "aisles"}.get(lv.get("target"), lv.get("target") or "")
+            out.append({"constraint_id": f"{d['decision_id']}-p{i}", "kind": "protect", "label": f"protect {what} {', '.join(map(str, lv.get('ids') or []))}".strip(),
+                        "day_start": d["day"], "day_end": d["day"] + days - 1, "owner_role": d["decided_by"], "owner": decider_name(d["decided_by"]),
+                        "args": lv})
+    return out
+
+
 SCENARIO_TITLES = {"reslot_default": "Reslot of 28 aisles"}
 
 
@@ -441,8 +464,8 @@ def _day_bundle(run_id: str, day: int, with_hourly: bool = True) -> dict:
     active_hire_ids = [h["role_id"] for h in active]
     checks = [k for k in _q("checks", run_id=run_id) if k["day"] == day]
     drift = [f for f in _q("drift_flags", run_id=run_id) if f["day"] == day]
-    cons = [dict(k, label=event_label(k), owner=role_name(k["owner_role"])) for k in _q("constraints", run_id=run_id)
-            if k["day_start"] <= day <= (k["day_end"] or k["day_start"])]
+    cons = [c for c in [dict(k, label=event_label(k), owner=role_name(k["owner_role"])) for k in _q("constraints", run_id=run_id)] + protections(run_id)
+            if c["day_start"] <= day <= (c["day_end"] or c["day_start"])]
     return {
         "run_id": run_id, "day": day, "kpis": dr["kpis"], "predicted": dr["predicted"],
         "violations": dr["violations"] or [], "violation_labels": [violation_label(v) for v in (dr["violations"] or [])],
@@ -495,7 +518,7 @@ def get_run(run_id: str) -> dict:
     hdr["events"] = [dict(e, label=event_label(e), plain=event_plain(e)) for e in store().events(run_id)]
     hdr["hires"] = [dict(h, role_id=role_of(h["role"])["id"], role=role_name(h["role"]), trigger_label=humanize_trigger(h["trigger"]))
                     for h in _q("hires", run_id=run_id)]
-    hdr["constraints"] = [dict(k, label=event_label(k), owner=role_name(k["owner_role"])) for k in _q("constraints", run_id=run_id)]
+    hdr["constraints"] = [dict(k, label=event_label(k), owner=role_name(k["owner_role"])) for k in _q("constraints", run_id=run_id)] + protections(run_id)
     hdr["roles"] = roles()
     hdr["agreements"] = _q("agreements", run_id=run_id)
     hdr["evidence"] = [{k: v for k, v in e.items() if k != "spec"} for e in _q("evidence", run_id=run_id)]
@@ -606,10 +629,10 @@ def inbox(run_id: str, body: InboxIn) -> dict:
             "pending": [m for m in _q("inbox", run_id=run_id) if m["consumed_day"] is None]}
 
 
-PRESETS = {
+PRESETS = {  # first = default in the fork dialog; pause_3 diverges on any parent (COMMS B-2)
+    "pause_3": {"label": "Pause the reslot for 3 days", "levers": [{"kind": "pause_reslot", "days": 3}]},
     "protect_pm": {"label": "Protect the Pick Module all week",
                    "levers": [{"kind": "protect", "target": "zone", "ids": ["1", "2", "3", "4", "5", "6"], "days": 7}]},
-    "pause_3": {"label": "Pause the reslot for 3 days", "levers": [{"kind": "pause_reslot", "days": 3}]},
     "temps_6": {"label": "Hire 6 temps for 10 days",
                 "levers": [{"kind": "hire_temps", "count": 6, "start_day": 0, "days": 10}]},
 }
@@ -733,7 +756,7 @@ def _node_label(run_id: str, node: str, cache: dict) -> dict:
         if d:
             out.update(day=d["day"], label=f"Decision day {d['day']}",
                        detail=effects(d["levers"]), levers="; ".join(lever_label(lv) for lv in (d["levers"] or [])),
-                       rationale=d["rationale"], by=d["decided_by"], phrase=f"on day {d['day']} Megan chose {effects(d['levers'])}")
+                       rationale=d["rationale"], by=d["decided_by"], phrase=f"on day {d['day']} {decider_name(d['decided_by'])} chose {effects(d['levers'])}")
     elif kind == "evt":
         e = cache.setdefault("evt", {x["event_id"]: x for x in store().events(run_id)}).get(ident)
         if e:
