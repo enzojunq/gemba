@@ -26,6 +26,11 @@ def test_static_rules():
     d62 = p.decide(62, v, [ev], twin, s)
     assert [lv.kind for lv in d62.levers] == ["pause_reslot"] and d62.levers[0].decision_id == "bt-1-d62"
     assert d62.decided_by == "static" and d62.option_id is None
+    # a consequence event (its own doing) does not pause the baseline
+    cons = c.Event(event_id="c", kind="replen_alert", day=63, args={"stockout_pct": 2.0}, announced_day=63,
+                   source="consequence", caused_by="kpi:bt-1:62:stockout_lines")
+    d63 = p.decide(63, v, [cons], twin, s)
+    assert [lv.kind for lv in d63.levers] == ["reslot_tonight"]
 
 
 def test_big_bang_and_do_nothing():

@@ -52,7 +52,10 @@ class StaticRules(_Baseline):
     MOVES_PER_NIGHT = 200
 
     def decide(self, day, view, events, twin, state) -> c.Decision:
-        if any(e.day == day for e in events):
+        # Pause on exogenous events only (spec 15 "pause on any event day"); a baseline that
+        # pauses on its own consequences (replen_alert, director_escalation) would be unfair
+        # to itself (A/B agreement 13:20).
+        if any(e.day == day and e.source != "consequence" for e in events):
             return self._decision(day, [c.PauseReslot(days=1)], "Static rules: event today, pause reslot.")
         return self._decision(day, [c.ReslotTonight(n_moves=self.MOVES_PER_NIGHT, order="value")],
                               f"Static rules: {self.MOVES_PER_NIGHT} moves tonight by value.")
