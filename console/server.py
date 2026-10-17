@@ -218,7 +218,8 @@ def humanize_rationale(r: str | None) -> str:
 # names). Judges read the room, so the console speaks plain words.
 _LEVER_CALL = {"pause_reslot": "pause slot moves", "reslot_tonight": "slot moves tonight", "close_aisle": "close the aisle",
                "hire_temps": "bring in temps", "protect": "protect", "shift_labor": "move people", "set_priority": "set priorities"}
-_METRIC = {"safety_risk_max": "the safety limit", "safety_risk": "safety risk", "on_time": "on-time",
+_METRIC = {"on_time_pct": "on-time", "stockout_lines": "stock-outs", "mispick_rate_pct": "mis-picks", "lph": "lines per labor hour",
+           "reslot_progress_pct": "reslot progress", "labor_cost_usd": "labor cost", "safety_risk_max": "the safety limit", "safety_risk": "safety risk", "on_time": "on-time",
            "pm_peak_zone_load": "Pick Module peak load", "pm_peak_load": "Pick Module peak load",
            "director_escalation": "director escalation", "mispick_rate": "mis-pick rate", "mispicks": "mis-picks",
            "lines_per_labor_hour": "lines per labor hour", "staging_occupancy": "staging use", "reslot_progress": "reslot progress"}
@@ -368,7 +369,7 @@ def event_plain(e: dict) -> str:
         "staging_congestion": f"staging buffer at {a.get('occupancy', '')}% chokes nearby aisles",
         "safety_review": f"near-miss in aisle {a.get('aisle', '')}: safety review",
         "aisle_closure": f"aisle {a.get('aisle', '')} forced closed for {a.get('days', '')} days",
-        "director_escalation": f"the director was pulled in over {str(a.get('metric', '')).replace('_', ' ')}",
+        "director_escalation": f"the director was pulled in over {_METRIC.get(str(a.get('metric', '')), str(a.get('metric', '')).replace('_', ' '))}",
         "replen_alert": f"stock-outs at {a.get('stockout_pct', '')}%: replenishment alert",
     }.get(k, EVENT_LABEL.get(k, k))
 
@@ -498,9 +499,27 @@ def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")
 
 
+_LIVE: set[str] = set()  # runs started by this console process (forks and POST /runs)
+
+
 @app.get("/runs")
 def list_runs() -> dict:
-    return {"recorded": recorded(), "store": store().url, "runs": [_run_header(r) for r in store().list_runs()]}
+    from sqlalchemy import func
+    calls, met = md.tables["llm_calls"], md.tables["meetings"]
+    with store().engine.connect() as conn:  # which runs the org actually ran (cut-off runs never got a cost)
+        org = {r[0] for r in conn.execute(select(calls.c.run_id).group_by(calls.c.run_id))}
+        org |= {r[0] for r in conn.execute(select(met.c.run_id).group_by(met.c.run_id))}
+        days = dict(conn.execute(select(md.tables["day_results"].c.run_id, func.count()).group_by(md.tables["day_results"].c.run_id)).all())
+    out = []
+    for r in store().list_runs():
+        h = _run_header(r)
+        h["org"] = r["run_id"] in org
+        h["days_done"] = days.get(r["run_id"], 0)
+        # a "running" run this process is not executing was cut off (console restarted)
+        if h["status"] == "running" and r["run_id"] not in _LIVE:
+            h["status"] = "stopped"
+        out.append(h)
+    return {"recorded": recorded(), "store": store().url, "runs": out}
 
 
 @app.get("/runs/{run_id}")
@@ -686,8 +705,8 @@ def learning() -> dict:
     gate = [r for r in rows if r["contender"] == "gate"]
     by: dict[str, dict[str, list[float]]] = {}
     for r in rows:
-        if r["contender"] == "gate" or r["metrics"].get("score") is None:
-            continue
+        if r["contender"] == "gate" or r["metrics"].get("score") is None or not str(r["scenario_id"]).startswith("test"):
+            continue  # the chart is the held-out test set only; train and baseline rows stay out
         name = r["contender"] if r["contender"] != "crew" else "crew_v0"
         by.setdefault(r["scenario_id"], {}).setdefault(name, []).append(float(r["metrics"]["score"]))
     scen = [{"scenario": k, "scores": {c: sum(v) / len(v) for c, v in cs.items()}} for k, cs in sorted(by.items())]
@@ -714,6 +733,7 @@ def fork(run_id: str, body: ForkIn) -> dict:
     typed = [_lever(lv) for lv in levers]
     cons = [c.Event(**e) for e in body.constraints]
     new_id = api.fork_run(run_id, body.day, typed, cons, store=store())
+    _LIVE.add(new_id)
     return {"ok": True, "run_id": new_id, "parent_run_id": run_id, "day": body.day, "levers": levers}
 
 
@@ -734,6 +754,7 @@ class RunIn(BaseModel):
 def start_run(body: RunIn) -> dict:
     api = _engine_api()
     run_id = api.start_run(body.scenario, body.profile, body.playbook, body.policy, body.seed, store=store())
+    _LIVE.add(run_id)
     return {"ok": True, "run_id": run_id}
 
 
@@ -768,8 +789,8 @@ def compare(a: str, b: str) -> dict:
         ea, eb = effects((xa.get(day) or {}).get("levers")), effects((xb.get(day) or {}).get("levers"))
         differs = (day in xa and day in xb and _strip(xa[day]["levers"]) != _strip(xb[day]["levers"]))
         if differs and first_div is None:
-            first_div = {"day": day, "a": {"decision_id": xa[day]["decision_id"], "levers": la, "effect": ea, "rationale": xa[day]["rationale"]},
-                         "b": {"decision_id": xb[day]["decision_id"], "levers": lb, "effect": eb, "rationale": xb[day]["rationale"]}}
+            first_div = {"day": day, "a": {"decision_id": xa[day]["decision_id"], "levers": la, "effect": ea, "rationale": plain_text(humanize_rationale(xa[day]["rationale"]))},
+                         "b": {"decision_id": xb[day]["decision_id"], "levers": lb, "effect": eb, "rationale": plain_text(humanize_rationale(xb[day]["rationale"]))}}
         rows.append({"day": day, "a": ka, "b": kb, "delta": deltas, "decision_a": la, "decision_b": lb,
                      "differs": differs})
     totals = {}
@@ -796,7 +817,7 @@ def _node_label(run_id: str, node: str, cache: dict) -> dict:
         if d:
             out.update(day=d["day"], label=f"Decision day {d['day']}",
                        detail=effects(d["levers"]), levers="; ".join(lever_label(lv) for lv in (d["levers"] or [])),
-                       rationale=d["rationale"], by=d["decided_by"], phrase=f"on day {d['day']} {decider_name(d['decided_by'])} chose {effects(d['levers'])}")
+                       rationale=plain_text(humanize_rationale(d["rationale"])), by=d["decided_by"], phrase=f"on day {d['day']} {decider_name(d['decided_by'])} chose {effects(d['levers'])}")
     elif kind == "evt":
         e = cache.setdefault("evt", {x["event_id"]: x for x in store().events(run_id)}).get(ident)
         if e:
@@ -823,8 +844,8 @@ def _node_label(run_id: str, node: str, cache: dict) -> dict:
         if len(parts) >= 3:
             day = int(parts[-2])
             name = parts[-1]
-            out.update(day=day, label=f"{name.replace('_', ' ')} day {day}", detail="KPI",
-                       phrase=f"{name.replace('_', ' ')} on day {day}")
+            word = _METRIC.get(name, name.replace("_", " "))
+            out.update(day=day, label=f"{word} day {day}", detail="KPI", phrase=f"{word} on day {day}")
             dr = next((d for d in store().day_results(run_id) if d["day"] == day), None)
             if dr and dr["kpis"] and name in dr["kpis"]:
                 out["value"] = dr["kpis"][name]

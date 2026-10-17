@@ -32,13 +32,14 @@
   </defs>
 </svg>
 
+<div class="run-menu" id="run-menu" role="listbox" aria-label="Choose a run to replay" hidden></div>
 <header class="top" id="top">
   <div class="brand">
     <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
     <span class="brand-name">Gemba</span>
   </div>
   <div class="run-facts" id="run-facts">
-    <span class="run-title" id="f-title" title="">—</span>
+    <button type="button" class="run-title run-pick" id="f-title" title="" aria-haspopup="listbox" aria-expanded="false"><span id="f-title-text">—</span><svg class="ic run-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     <span class="fact fact-lineage" id="f-lineage" hidden><svg class="ic"><use href="#i-fork"/></svg><span id="f-lineage-text"></span></span>
     <span class="pill pill-status" id="f-status" title="">—</span>
   </div>

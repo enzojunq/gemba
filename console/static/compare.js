@@ -28,8 +28,8 @@ export class Compare {
       <p class="cmp-verdict">${verdict}</p>
       <div class="cmp-head">
         <h2>Compare</h2>
-        <span class="cmp-run a"><i></i>A <code>${esc(ra.run_id)}</code> ${esc(ra.profile || "")}${ra.fork_day != null ? ` · fork @${ra.fork_day}` : ""}</span>
-        <span class="cmp-run b"><i></i>B <code>${esc(rb.run_id)}</code> ${esc(rb.profile || "")}${rb.fork_day != null ? ` · fork @${rb.fork_day}` : ""}</span>
+        <span class="cmp-run a"><i></i>A <code>${esc(ra.run_id)}</code> ${esc((ra.profile || "").replace(/_/g, "-"))}${ra.fork_day != null ? ` · fork @${ra.fork_day}` : ""}</span>
+        <span class="cmp-run b"><i></i>B <code>${esc(rb.run_id)}</code> ${esc((rb.profile || "").replace(/_/g, "-"))}${rb.fork_day != null ? ` · fork @${rb.fork_day}` : ""}</span>
         <span class="pane-sub">${rb.parent_run_id === ra.run_id ? `B forks A at day ${rb.fork_day}` : ra.parent_run_id === rb.run_id ? `A forks B at day ${ra.fork_day}` : "independent runs"}</span>
         <button class="btn" id="cmp-close" style="margin-left:auto"><svg class="ic"><use href="#i-x"/></svg>Back to run</button>
       </div>

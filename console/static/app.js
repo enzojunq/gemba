@@ -63,7 +63,8 @@ async function boot() {
   const runs = await fetch("/runs").then((r) => r.json());
   if (!runId) {
     // Open a run where the org actually met (LLM cost > 0) before any rules-only baseline run.
-    const top = runs.runs.filter((r) => !r.parent_run_id);
+    const top = [...runs.runs.filter((r) => !r.parent_run_id && r.mode !== "eval" && r.profile === "customer_first"),
+                 ...runs.runs.filter((r) => !r.parent_run_id && r.mode !== "eval")];
     const pick = top.find((r) => r.recorded && r.status === "done") || top.find((r) => r.llm_usd > 0 && r.status === "done")
       || top.find((r) => r.status === "done") || runs.runs[0];
     if (!pick) { showEmpty(runs); return; }
@@ -89,7 +90,7 @@ async function loadRunHeader(runId) {
   const run = await r.json();
   state.runId = runId; state.run = run;
   const t = $("#f-title");
-  t.textContent = `${run.scenario_title || run.scenario || "—"} · ${(run.profile || "").replace(/_/g, "-")}`;
+  $("#f-title-text").textContent = `${run.scenario_title || run.scenario || "—"} · ${(run.profile || "").replace(/_/g, "-")}`;
   t.title = `scenario ${run.scenario} · profile ${run.profile} · playbook ${run.playbook} · run ${run.run_id}`;
   setStatusPill(run);
   if (run.roles) room.setRoles(run.roles);
@@ -351,6 +352,38 @@ $("#compare-form").addEventListener("submit", (e) => {
   e.preventDefault();
   location.href = `/?compare=${encodeURIComponent($("#cmp-a").value)},${encodeURIComponent($("#cmp-b").value)}`;
 });
+
+// ---------------------------------------------------------------- run menu (pick a replay)
+const runMenu = $("#run-menu");
+function closeRunMenu() { runMenu.hidden = true; $("#f-title").setAttribute("aria-expanded", "false"); }
+$("#f-title").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  if (!runMenu.hidden) { closeRunMenu(); return; }
+  const j = await fetch("/runs").then((r) => r.json());
+  const all = j.runs.filter((r) => r.status !== "failed" && r.days_done > 0);
+  const org = (r) => r.recorded || r.org || (r.llm_usd || 0) > 0;
+  const label = (r) => `${r.scenario_title || r.scenario} · ${(r.profile || "").replace(/_/g, "-")}`;
+  const when = (r) => { const d = new Date(r.started_at || ""); return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
+  const st = (r) => r.status === "done" ? `${r.n_days || r.days_done} days` : r.status === "stopped" ? `stopped after ${r.days_done} days` : `${esc(r.status)} · day ${r.days_done} of ${r.n_days || "?"}`;
+  const row = (r) => `<button type="button" role="option" class="rm-row ${r.run_id === state.runId ? "is-current" : ""}" data-run="${esc(r.run_id)}">
+      <span class="rm-name">${esc(label(r))}${r.parent_run_id ? ` <span class="rm-tag t-fork">fork · day ${r.fork_day}</span>` : ""}${r.recorded ? ' <span class="rm-tag t-rec">recorded</span>' : ""}</span>
+      <span class="rm-meta">${st(r)} · started ${esc(when(r))} · ${esc(r.run_id)}</span></button>`;
+  const sec = (title, list) => list.length ? `<div class="rm-sec"><h4>${title}</h4>${list.map(row).join("")}</div>` : "";
+  const main = all.filter((r) => r.mode !== "eval" && !(r.parent_run_id && /^ev-/.test(r.parent_run_id)));
+  const learn = all.filter((r) => !main.includes(r));
+  runMenu.innerHTML = sec("With the AI org (meetings and chat)", main.filter((r) => org(r) && !r.parent_run_id))
+    + sec("Forks", main.filter((r) => r.parent_run_id))
+    + sec("Rules only (no meetings)", main.filter((r) => !org(r) && !r.parent_run_id))
+    + (learn.length ? `<details class="rm-sec rm-more"><summary>Learning: ${learn.length} test and retro runs</summary>${learn.map(row).join("")}</details>` : "")
+    || `<p class="rm-empty">No runs in this store yet.</p>`;
+  const b = $("#f-title").getBoundingClientRect();
+  runMenu.style.left = `${Math.round(b.left)}px`; runMenu.style.top = `${Math.round(b.bottom + 6)}px`;
+  runMenu.hidden = false; $("#f-title").setAttribute("aria-expanded", "true");
+  for (const el of runMenu.querySelectorAll("[data-run]")) el.addEventListener("click", () => { location.href = `/?run=${encodeURIComponent(el.dataset.run)}`; });
+  const cur = runMenu.querySelector(".is-current") || runMenu.querySelector(".rm-row"); if (cur) cur.focus();
+});
+document.addEventListener("click", (e) => { if (!runMenu.hidden && !runMenu.contains(e.target)) closeRunMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !runMenu.hidden) closeRunMenu(); });
 
 // ---------------------------------------------------------------- toast
 let toastT = null;

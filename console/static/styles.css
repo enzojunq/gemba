@@ -633,3 +633,23 @@ body.is-compare #btn-play, body.is-compare #speed, body.is-compare #btn-fork, bo
 .btn-sm { padding: 4px 10px; font-size: 12.5px; font-family: var(--font-ui); flex: none; }
 .learn-svg .bar-t { paint-order: stroke; stroke: var(--bg-2); stroke-width: 4px; }
 @media (max-width: 900px) { .learn-grid { grid-template-columns: 1fr; } }
+
+/* ---------------------------------------------------------------- run menu */
+.run-pick { display: inline-flex; align-items: center; gap: 6px; background: none; border: 1px solid transparent; border-radius: 8px; padding: 4px 8px; margin: -4px -8px; color: inherit; font: inherit; cursor: pointer; min-width: 0; }
+.run-pick:hover, .run-pick[aria-expanded="true"] { border-color: var(--line-2); background: var(--surface-2); }
+.run-pick:focus-visible { outline: none; box-shadow: var(--focus); }
+.run-pick > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-caret { width: 16px; height: 16px; color: var(--text-3); flex: none; }
+.run-menu { position: fixed; z-index: 60; width: min(520px, calc(100vw - 32px)); max-height: min(70vh, 640px); overflow: auto; padding: 8px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); display: grid; gap: 10px; }
+.rm-sec h4 { margin: 2px 6px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-3); font-weight: 600; }
+.rm-row { display: grid; gap: 2px; width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; cursor: pointer; }
+.rm-row:hover, .rm-row:focus-visible { background: var(--surface-2); outline: none; }
+.rm-row.is-current { background: var(--amber-dim); }
+.rm-name { font-size: 14px; font-weight: 600; }
+.rm-meta { font: 500 12px var(--font-data); color: var(--text-3); }
+.rm-tag { font: 600 11px var(--font-data); text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 6px; border-radius: 999px; margin-left: 4px; }
+.rm-tag.t-fork { color: var(--blue); background: var(--blue-dim); }
+.rm-tag.t-rec { color: var(--green); background: var(--green-dim); }
+.rm-empty { margin: 6px; color: var(--text-3); font-size: 13px; }
+.rm-more summary { margin: 2px 6px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-3); font-weight: 600; cursor: pointer; }
+.run-menu[hidden] { display: none; }

@@ -4,7 +4,7 @@ Spec section 22 is the storyboard; this maps it onto the console as built. Befor
 `make demo` (replays `recordings/hero.db`, badge "Recorded · replaying") or `make console` for a live store.
 Dark theme on the projector. Say "recorded run from this afternoon" the first time the badge is on screen.
 
-Hero run id below is `<hero>`; the fork created on stage is `<fork>`.
+Recording (`make demo`, `recordings/hero.db`): customer-first hero `bt-cb97aeb0` (opens by default), efficiency-first hero `bt-449cd50d`, day-69 "pause 3 days" fork `fk-3b1e986f`. Pick any of them from the run menu (click the run name, top left). Below, `<hero>` = `bt-cb97aeb0`, `<fork>` = `fk-3b1e986f`.
 
 | Time | On screen (URL or click) | Say |
 |---|---|---|
@@ -39,3 +39,18 @@ Hero run id below is `<hero>`; the fork created on stage is `<fork>`.
 4. 32–44 s: fork at 69 + compare verdict. Caption "Fork any day. Compare the two futures."
 5. 44–52 s: Scenario dialog, Draft from words. Caption "Any disruption, in plain words."
 6. 52–60 s: v0 vs v1 chart. Caption "The org rewrites its playbook and proves it on unseen scenarios."
+
+## Video takes on the recording (B's PITCH_1MIN.md, one line per shot)
+
+Console: `make demo`, browser ~1440x900, dark theme, speed 4x, pause on each beat. Every link opens paused with `&autoplay=0`.
+
+| Pitch line | Open | Do |
+|---|---|---|
+| "Simulators model the floor. Nobody models the meeting." | `/?run=bt-cb97aeb0&day=61` | press play at 16x for a few seconds: slot moves at night, pickers by day |
+| "Every morning they hold a standup... act through typed levers." | `/?run=bt-cb97aeb0&day=66&autoplay=0` | play 4x: rack damage, standup, decision banner lands |
+| "...Quality in the room, SKUs locked..." | `/?run=bt-cb97aeb0&day=71&autoplay=0` | Ellen's LOCKED chip; decision "C001's SKUs locked in place for 3 days" |
+| "You can see the whole chain" | `/?run=bt-cb97aeb0&day=73&autoplay=0` | click the red marker over day 72-73: on-time miss → director called in → Dana decides |
+| "Fork any day with a different call" | `/?compare=bt-cb97aeb0,fk-3b1e986f` | verdict sentence, synced timelines (complete after B's second export) |
+| "customer-first versus efficiency-first" | `/?compare=bt-cb97aeb0,bt-449cd50d` | first divergence day 64: customer-first pauses, efficiency-first moves 200 |
+| "Type a disruption in plain words" | any run | Scenario → Draft from words (or the Inbox box) |
+| "keeps the lesson only if it wins on scenarios it has never seen" | header **Learning** | lessons + their forks; v0 vs v1 chart fills after the gate (~16:00) |

@@ -27,7 +27,7 @@ export class Learning {
       <div class="learn-grid">
         <section class="learn-chart"><h4>Score on unseen test scenarios <span>(vs doing nothing; higher is better)</span></h4>${this.chart(j.scenarios)}
           <div class="learn-legend"><span><i class="lg-v0"></i>Version 0 · empty playbook</span><span><i class="lg-v1"></i>Version 1 · with the lessons</span><span><i class="lg-st"></i>Static rules</span></div></section>
-        <section class="learn-rules"><h4>Lessons the org kept <span>(each proved by forking its worst day)</span></h4>${this.rules(j.rules)}</section>
+        <section class="learn-rules"><h4>Lessons from the retro <span>(each proved by forking its worst day)</span></h4>${this.rules(j.rules)}</section>
       </div>`;
     for (const b of body.querySelectorAll("[data-compare]")) b.addEventListener("click", () => { location.href = `/?compare=${encodeURIComponent(b.dataset.compare)}`; });
   }
@@ -40,7 +40,10 @@ export class Learning {
       const m = (k) => { const v = j.scenarios.map((s) => s.scores[k]).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
       s0 = m("crew_v0"); s1 = m(Object.keys((j.scenarios[0] || {}).scores || {}).find((k) => /^crew_v[1-9]/.test(k)));
     }
-    if (s0 == null || s1 == null) return `<b>${j.rules.filter((r) => r.status !== "rejected").length} lessons kept.</b> No test results yet.`;
+    if (s0 == null || s1 == null) {
+      const n = j.rules.filter((r) => r.status !== "rejected").length;
+      return `<b>${n} lesson${n === 1 ? "" : "s"} waiting for the test.</b> Each was proved by forking its day; the gate now checks whether the new playbook wins on scenarios the org has never seen.`;
+    }
     const won = g ? g.improved : s1 > s0;
     const viol = g && g.violations_v0 != null ? ` · rule breaches per run ${g.violations_v0.toFixed(1)} → ${g.violations_v1.toFixed(1)}` : "";
     return won
@@ -49,7 +52,7 @@ export class Learning {
   }
 
   chart(scen) {
-    if (!scen.length) return `<p class="learn-empty">No test results yet.</p>`;
+    if (!scen.length) return `<p class="learn-empty">The test on unseen scenarios has not run yet. Its result (version 0 vs version 1, static rules as the reference) appears here when the gate finishes.</p>`;
     const W = 620, H = 300, padL = 44, padB = 34, padT = 26, gw = (W - padL - 10) / scen.length;
     const vals = scen.flatMap((s) => Object.values(s.scores));
     const lo = Math.min(0, ...vals), hi = Math.max(0.01, ...vals) * 1.18;
