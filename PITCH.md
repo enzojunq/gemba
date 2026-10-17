@@ -9,33 +9,50 @@ Every number is from the recorded runs of 17 Oct in `recordings/hero.db` (custom
 
 ## The two-liner
 
-Gemba rehearses an operational change before you live it: a deterministic warehouse twin plus a team of
-Nemotron agents who hold the daily standup, argue with simulator evidence and act through typed levers, so
-decisions have consequences and consequences trigger the next decision. You get a plan that already survived
-the surprises, a fork for any day's decision, a trace of every cascade, and a decision record the next engineer
-can read.
+Gemba is a decision twin for operations: connect your floor twin, define your org (each stakeholder with a KPI
+to defend), your priorities and your scenarios, and an AI version of that org rehearses the plan day by day,
+negotiating trade-offs and acting through typed levers, so you see how decisions cascade over time before you
+make them for real. Fork any day to backtest a different call, inject surprises, and keep the org's full
+decision record: the tribal knowledge of why things were decided, which the org itself learns from.
 
 ---
 
-## One minute: the submission pitch (about 160 words)
+## One minute: the submission pitch (about 170 words)
 
 Every operational change gets planned on a spreadsheet and then survives contact with reality in a daily
-standup. Simulators and digital twins model the floor. Nobody models the meeting.
+standup. Simulators and digital twins model the floor. Nobody models the meeting, and nobody keeps why the
+decisions were made.
 
-Gemba models both. A deterministic twin of the warehouse, and a team of Nemotron agents that run it: a chair,
-ops, safety with a veto, quality with a lock, a shift lead who owns the labor truth, a director for
-escalations. Every morning they hold a standup, every option carries a simulator what-if, and they act through
-typed levers. Then the floor answers.
+Gemba is a decision twin. You connect the floor twin you have, define your org, each role with its own KPI to
+defend, set the company's priorities, and write the scenarios. Then an AI version of that org runs the plan
+day by day: it holds the standup, every option carries a simulator what-if, stakeholders negotiate, the chair
+decides inside the authority rules, and the floor answers. A decision has consequences, and consequences
+trigger the next decision, so you watch cascades unfold over weeks, not one night.
 
-In a normal simulation a decision is an input. Here a decision has consequences, and consequences trigger the
-next decision, and every record points back at what caused it.
-
-So engineers rehearse instead of hoping: run the month before you live it, fork any day with a different call
-and see the other future, inject a surprise in plain words. When people leave, every option, objection and
-number is in the decision record. And the org reviews its own worst days, tests a better move by forking, and
-keeps a lesson only if it also wins on scenarios it has never seen.
+You fork any day to backtest a different call, inject a surprise in plain words, compare priorities on the
+same month. Every option, objection and number stays in the decision record, so when an engineer leaves the
+reasoning doesn't. And the org learns from its own mistakes: lessons are proven by forking and promoted only
+on unseen scenarios. A meta-harness above it, sandboxed in NemoClaw, updates scenarios and org settings; fed
+with live floor data and real decisions it becomes the standup's copilot.
 
 Today it rehearses a warehouse reslot. The pattern is any operational change.
+
+---
+
+## What we show for each claim
+
+| Claim | Where it is on screen |
+|---|---|
+| Connect your twin, define your org, priorities, scenarios | `org/roles/*.yaml` (a role is a file), `profiles/*.yaml`, the Scenario dialog; the twin behind a protocol (`CONTRACT.md`) |
+| Stakeholders defend their own KPI and negotiate | Meeting room, day 66: Sam (safety) proposes closing aisle 7, Ryan (throughput) opposes the reslot on PM load, Megan decides; positions cite what-if evidence ids |
+| Cascades over time | Cascade graph on the big-bang run `ev-98548726` day 64: decision → staging full → key-customer escalation → director; hero day 73: on-time miss → Dana |
+| Fork and backtest a decision | Fork `fk-3b1e986f` at day 69 (pause 3 days) vs the hero in Compare: identical before, divergence on day 69, both finish day 79 |
+| Compare priorities | Customer-first hero vs efficiency-first hero: day 64 one pauses, one moves; month within a tenth of a point |
+| Inject surprises | Inbox (live) and the Scenario dialog "Draft from words" (live); the Scenario Designer in the NemoClaw sandbox on the second laptop |
+| Tribal knowledge / decision record | Transcript, options with scores, hires with triggers, checks, drift flags per day; `decisions`/`utterances`/`evidence` tables; the Board drawer |
+| The org learns from its mistakes | Learning view: three lessons verified by fork (bars, "Open the fork"); the gate on unseen scenarios with its verdict and rule |
+| Meta-harness and copilot | Scenario Designer live on A's Mac (writes scenarios, starts runs, cannot touch the floor); copilot described as the next step: same loop fed with yesterday's actuals and today's real decisions |
+| Self-checks and unattended operation | Timeline threshold lines and failed-check ticks; drift markers; 30 days, 20 meetings, 14 hires, $0.30, no human in the loop |
 
 ---
 
@@ -49,7 +66,9 @@ Brackets mark the action and whether it is recorded or live. Roughly 430 words p
 layout in a day. Getting there took six weeks, because the warehouse keeps shipping while you move things, and
 stuff keeps happening: people call in sick, a rack gets hit, a customer has a big week. Every time there's a
 meeting where ops, safety, quality and the program manager argue about tonight. Our simulators modelled the
-floor fine. They didn't model that meeting. Gemba simulates the warehouse and the people who run it."
+floor fine. They didn't model that meeting, and nobody kept why we decided what we decided. Gemba is a
+decision twin: you plug in your floor twin, define your org and priorities, and it rehearses the plan with
+the people in it."
 
 **The org (about 40 s).** [scrub to day 66: rack damage, Sam called in, his option on screen]
 "Gemba is a harness: code that runs the meeting, hands the agents simulator evidence, and enforces who may
@@ -94,9 +113,12 @@ the fork actually applied it and did better by a margin, with no rate-limit fall
 - If not: "Today's gate didn't promote; the verified lessons are in the record and the rule is the point:
   nothing enters the playbook without a counterfactual."
 
-**Close (about 15 s).** [floor]
-"The reslot is the first scenario. The twin is swappable and the org chart is config, so the same loop
-rehearses a peak season or a WMS cutover, and sits in tomorrow's real standup as a copilot. Happy to dig in."
+**Close (about 20 s).** [floor]
+"The reslot is just today's scenario. The twin is behind a protocol and the org chart is config, so the same
+loop rehearses a peak season, a WMS cutover, a new customer. The meta-harness above it changes scenarios and
+org settings; feed it live floor data and the real decisions people make, and it's the copilot in tomorrow's
+standup, steered by what actually happened. That's a new kind of simulation: one that argues, remembers, and
+learns from its own mistakes. Happy to dig in."
 
 ---
 
