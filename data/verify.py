@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from data.gen import TARGET_ZONE_CAP, ZONE_CAP_LINES_PER_DAY, aisle_distance, db_path_from_env, history_days_for
+from data.gen import TARGET_ZONE_CAPACITY, ZONE_CAP_LINES_PER_DAY, aisle_distance, db_path_from_env, history_days_for
 
 FAR = {1, 2, 3, 4, 5, 24, 25, 26, 27, 28}
 
@@ -129,9 +129,11 @@ def verify(db: str) -> list[Check]:
     # target PM: every zone under the slotter cap (target 2 of spec 9.3a wants peak 0.85-1.0 after the reslot)
     tz = t["slotting_target"].set_index("sku_id")["active_loc"].map(_loc_zone)
     tzl = v.groupby(tz.reindex(v.index)).sum()
-    tpeak = float(tzl.max()) if len(tzl) else 0.0
-    checks.append(Check("target: peak PM zone lines/day (hist)", round(tpeak, 0), f"<= {TARGET_ZONE_CAP:.0f}", tpeak <= TARGET_ZONE_CAP))
-    checks.append(Check("info: target PM share of hist lines", round(float(tzl.sum() / v.sum()), 3), "~0.75-0.8", True))
+    tpeak = float(tzl.max()) / TARGET_ZONE_CAPACITY if len(tzl) else 0.0
+    tshare = float(tzl.sum() / v.sum())
+    checks.append(Check("target: peak PM zone load (hist lines/day / 4147)", round(tpeak, 3), "<= 0.95", tpeak <= 0.95))
+    checks.append(Check("target: PM share of hist lines", round(tshare, 3), "0.60..0.75", 0.60 <= tshare <= 0.75))
+    checks.append(Check("info: target PM zone lines/day", [int(x) for x in tzl.reindex(range(1, 7), fill_value=0)], "balanced, <= 3800", True))
     # informational: target vs current changes and lines/order
     n_changed = int((t["slotting_target"]["active_loc"].to_numpy() != t["slotting_current"]["active_loc"].to_numpy()).sum())
     checks.append(Check("info: SKU active slots changed current->target", n_changed, "~1100 (900..1300 at full scale)", True))

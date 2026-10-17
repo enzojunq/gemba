@@ -44,7 +44,7 @@ ZIPF_OFFSET = 20.0
 ZIPF_S = 1.3
 PM_PEAK_TARGET = 1.2
 N_EXTRA_SWAPS = 350       # random current-vs-ideal swaps so the target differs in ~1,100 slots
-KEEP_TOLERANCE_M = 12             # a current aisle slot within this distance of the assigned aisle is kept
+KEEP_TOLERANCE_M = 0              # keep a current aisle slot if it is at least this close to the assigned aisle (m of slack)
 CURRENT_COVER_DAYS = (3.0, 6.0)   # current layout: days of active cover per SKU (uniform)
 TARGET_COVER_DAYS = 3.0           # target layout: days of cover (2 would imply ~660 replen trips/day > pool)
 UNDERSIZED_COVER_DAYS = 0.4       # trap 4b: the 25 undersized fast SKUs
@@ -369,12 +369,13 @@ def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame
     pm = order[:n_pm]
     load = np.zeros(PM_ZONES + 1)
     pm_used: dict[int, set[int]] = {z: set() for z in range(1, PM_ZONES + 1)}
+    balanced_cap = min(zone_cap, 1.1 * v[pm].sum() / PM_ZONES)   # keep residents only while zones stay balanced
     pending = []
     for s in pm:
         l = cur_loc[s]
         if l.startswith("PM"):
             z, slot = int(l[2]), int(l[4:7])
-            if load[z] + v[s] <= zone_cap and slot not in pm_used[z]:
+            if load[z] + v[s] <= balanced_cap and slot not in pm_used[z]:
                 target[s] = l
                 load[z] += v[s]
                 pm_used[z].add(slot)
