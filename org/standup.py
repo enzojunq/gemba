@@ -796,7 +796,13 @@ class OrgPolicy:
         return ev_id
 
     def _run_evidence(self, o: Option, twin: Any, state: Any, events: list[Event]) -> None:
-        o.whatif = self._whatif(twin, state, list(o.levers), events)
+        try:
+            o.whatif = self._whatif(twin, state, list(o.levers), events)
+        except ValueError as e:  # A's whatif raises on levers apply_levers would reject (A/B agreement 14:12)
+            o.replaced = True
+            self._utter(self.chair_id, "question", f"{self._disp_opt(o.option_id)} withdrawn: the floor rejects its "
+                        f"levers: {self._scrub(e)[:200]}", option_id=o.option_id)
+            return
         o.evidence_id = self._write_evidence(f"{self._disp_opt(o.option_id)} {o.label}", o.levers, o.whatif,
                                              o.option_id)
         o.score = score_whatif(o.whatif, self._m.ref, self.profile)
