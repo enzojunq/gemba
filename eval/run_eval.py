@@ -151,13 +151,20 @@ def run_kpis(store: RunStore, run_id: str) -> c.Kpis:
     return aggregate_run([c.Kpis.model_validate(r["kpis"]) for r in rows])
 
 
-def violations(store: RunStore, run_id: str) -> int:
-    """Failed daily checks (these include the profile hard limits safety_risk_max and
-    pm_peak_zone_load) plus any violations the twin reported in `DayResult.violations`.
-    Skipped checks (passed None) do not count."""
-    failed = sum(1 for r in store.table("checks", run_id) if r.get("scope") == "daily" and r.get("passed") is not None
-                 and not r.get("passed"))
-    twin_reported = sum(len(r.get("violations") or []) for r in store.day_results(run_id))
+def violations(store: RunStore, run_id: str, profile: c.Profile) -> int:
+    """Failed daily checks at the profile's TEMPLATE thresholds (the same bar for every contender;
+    these include the hard limits safety_risk_max and pm_peak_zone_load) plus any violations the
+    twin reported in `DayResult.violations`. The `checks` rows are not used here: the org's chair
+    picks its own, often stricter, thresholds (97 on-time vs the template's 95 in the first hero
+    run), which is right for "the org writes its own done-checks" and wrong for a comparison."""
+    from engine.verifier import check_day, template  # lazy: eval must import without the engine
+    checks = template(profile)
+    failed = 0
+    rows = store.day_results(run_id)
+    for r in rows:
+        kpis = c.Kpis.model_validate(r["kpis"])
+        failed += sum(1 for res in check_day(checks, kpis) if res.passed is False)
+    twin_reported = sum(len(r.get("violations") or []) for r in rows)
     return failed + twin_reported
 
 
@@ -170,7 +177,7 @@ def run_metrics(store: RunStore, run_id: str, ref: c.Kpis, profile: c.Profile) -
         "lph_lift_pct": 100.0 * (agg.lph - ref.lph) / ref.lph if ref.lph else 0.0,
         "on_time_pct": agg.on_time_pct,
         "mispick_rate": agg.mispick_rate,
-        "violations": float(violations(store, run_id)),
+        "violations": float(violations(store, run_id, profile)),
         "near_misses": agg.near_misses,
         "overtime_hours": agg.overtime_hours,
         "reslot_progress_pct": agg.reslot_progress_pct,
