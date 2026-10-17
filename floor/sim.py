@@ -121,6 +121,7 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
     temps_ramp = s.temps_ramping(day)
     closed = set(s.closed_now(day))
     frozen = set(s.frozen_now(day)) | closed
+    damaged_open = [a for a in s.damaged_now(day) if a not in closed]
     wms = bool(s.effect_active("wms_sync_delay", day))
     staging_pct0 = s.staging_pct()
     congested = staging_pct0 > K.CONGESTION_THRESHOLD
@@ -456,7 +457,8 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
             temp_movers = av["night_move"] - hc["night"]["night_move"]
             legs_per_mover_hour = 3600.0 / K.MOVE_LEG_SECONDS
             aisle_leg_cap = int((K.MAX_MOVERS_PER_AISLE + max(temp_movers, 0.0)) * legs_per_mover_hour)
-            done_legs, sample, stalled, legs_by_aisle = _execute_legs(inputs, s, approved, n_legs, frozen, day, overload, aisle_leg_cap)
+            clear_first = s.staging_movers > 0
+            done_legs, sample, stalled, legs_by_aisle = _execute_legs(inputs, s, approved, n_legs, frozen, day, overload, aisle_leg_cap, clear_first)
             moves_h["done"] = done_legs
             moves_h["sample"] = sample
             moves_done_tonight += done_legs
@@ -478,6 +480,9 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
             for a in K.STAGING_ADJACENT_AISLES:
                 aisle_people[a] += K.CONGESTION_PEOPLE
 
+        for a in damaged_open:
+            if 6 <= ha < 22:
+                aisle_people[a] += K.DAMAGED_AISLE_PEOPLE
         # safety
         risk = aisle_people / K.SAFE_LIMIT
         for a in closed:
@@ -576,7 +581,8 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
 
 
 def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: int, frozen: set[int], day: int,
-                  overload: float = 1.0, aisle_leg_cap: int = 10 ** 9) -> tuple[int, list[dict], int, dict[int, int]]:
+                  overload: float = 1.0, aisle_leg_cap: int = 10 ** 9, clear_first: bool = False
+                  ) -> tuple[int, list[dict], int, dict[int, int]]:
     """Execute up to `n_legs` legs of the approved moves in order.
     Returns (legs done, sample for the animation, stalled legs, legs touching each aisle)."""
     done = 0
@@ -668,6 +674,11 @@ def _execute_legs(inputs: Inputs, s: FloorState, approved: list[Move], n_legs: i
     # Waves across the night: the crew starts every approved move first (direct moves complete, swaps
     # take a staging slot), then runs second legs, then third legs. Staging fills when a night starts
     # more swaps than it can finish; what is left carries to the next night.
+    if clear_first:  # staging_clearance: finish in-flight swaps (legs 2 and 3) before starting anything new
+        for m in sorted((m for m in approved if 0 < m.legs_done < m.legs), key=lambda m: m.seq):
+            while done < n_legs and m.legs_done < m.legs:
+                if not one_leg(m):
+                    break
     for wave in (1, 2, 3):
         for m in approved:
             if done >= n_legs:

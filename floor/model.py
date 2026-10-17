@@ -67,6 +67,7 @@ class FloorState:
     # aisles & protection
     closed_aisles: dict[int, tuple[int, str | None]] = field(default_factory=dict)   # aisle -> (until, cause)
     frozen_aisles: dict[int, tuple[int, str | None]] = field(default_factory=dict)   # no moves; aisle -> (until, cause)
+    damaged_aisles: dict[int, tuple[int, str | None]] = field(default_factory=dict)  # rack_damage, still open unless closed; aisle -> (until, cause)
     protections: list[c.Protection] = field(default_factory=list)
     # dips and timers
     dip_day: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int32))   # day the SKU was moved (night of)
@@ -92,7 +93,13 @@ class FloorState:
         return sorted(a for a, (until, _) in self.closed_aisles.items() if until >= day)
 
     def frozen_now(self, day: int) -> list[int]:
-        return sorted(a for a, (until, _) in self.frozen_aisles.items() if until >= day)
+        """Aisles with no moves tonight: leadership visit, safety review and damaged racks."""
+        out = {a for a, (until, _) in self.frozen_aisles.items() if until >= day}
+        out |= {a for a, (until, _) in self.damaged_aisles.items() if until >= day}
+        return sorted(out)
+
+    def damaged_now(self, day: int) -> list[int]:
+        return sorted(a for a, (until, _) in self.damaged_aisles.items() if until >= day)
 
     def temps_active(self, day: int) -> int:
         return min(K.TEMP_POOL_MAX, sum(n for n, a, b, _ in self.temps if a <= day <= b))

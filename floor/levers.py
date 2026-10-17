@@ -1,6 +1,28 @@
 """`apply_levers(state, levers, day)`: physical validation and state mutation (CONTRACT 3.2/3.3).
 
 Every SKU move, overtime hour and staging slot carries the lever's `decision_id`.
+
+Lever semantics (spec 10.3), as the twin applies them on `day`:
+- `reslot_tonight(n_moves)`: approve up to `n_moves` legs for tonight from the ranked plan; unfinished
+  approved legs carry to the next night under the same decision.
+- `pause_reslot(days)`: nothing is approved for `days` nights and not-yet-started approvals are dropped.
+  Note the do-nothing reference `whatif(state, [], ...)` is "no new decision": legs already approved
+  still run that night; `pause_reslot` additionally halts them.
+- `labor_allocate(shift, pool, headcount)`: `headcount` is the ABSOLUTE total for that pool on that
+  shift (not a delta), the same number `view().labor_available[shift][pool]` reports; rejected above
+  2x the roster.
+- `overtime(shift, pool, hours)`: the pool's shift end extends by `hours` tonight (person-hours = hours x
+  headcount are charged at 1.5x).
+- `hire_temps(count, start_day, days)`: temps pick on the day shift (70% productivity, 2x mis-picks for 5
+  days) and join the night crew when approved legs exceed the regular movers; at most 8 at a time.
+- `protect(target, ids, days)`: SKUs / PM zones / a customer's recent SKUs are not moved.
+- `resize_slots(skus, days_cover)`: active slot capacity = days_cover x average daily units.
+- `wave_priority(mode)`: FIFO key for picking (rush_first default, by_cutoff, by_zone).
+- `close_aisle(aisle, days)` / `reopen_aisle`: lines reroute to the pallet pool at 1.5x; a closed aisle
+  carries no safety risk. A `rack_damage` event only marks the aisle damaged (open, extra risk, no
+  moves) until the org closes it.
+- `staging_clearance(n_movers)`: tonight the crew finishes in-flight swaps (legs 2 and 3, freeing
+  staging) before starting new legs; no effect when staging is empty.
 """
 
 from __future__ import annotations

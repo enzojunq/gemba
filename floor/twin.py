@@ -88,6 +88,10 @@ class Twin:
         return st
 
     def view(self, state: FloorState) -> c.FloorView:
+        """`labor_available[shift][pool]` is the absolute headcount for that pool on that shift today (roster,
+        `labor_allocate` overrides and active shortages applied); `labor_allocate.headcount` sets the same
+        number. `frozen_aisles` = no moves tonight (leadership visit, safety review, damaged racks);
+        `closed_aisles` = no picking (rack damage closed by the org, `close_aisle`, aisle_closure)."""
         d = state.day
         labor = {s: {p: int(state.labor.get(s, {}).get(p, 0)) for p in POOLS} for s in SHIFTS}
         hc = sim._headcount(state, d)
@@ -140,10 +144,19 @@ class Twin:
         return fc.forecast_demand(self.inputs, state, day, horizon, known, perturb=self.perturb if self.pert and not self.pert.empty else None)
 
     def whatif(self, state: FloorState, levers: list[c.Lever], days: int, known_events: list[c.Event]) -> c.WhatIf:
-        """Levers apply on the first day of the horizon; forecast demand only; expected values, no draws."""
+        """Levers apply on the first day of the horizon; forecast demand only; expected values, no draws.
+
+        `whatif(state, [], days, known)` is the do-nothing reference: no new decision, but legs already
+        approved for tonight still run (a `pause_reslot` lever is what halts them).
+        Raises `ValueError` listing the rejection reasons when any lever is physically invalid
+        (unknown aisle/zone/SKU, headcount above 2x roster, too many temps), so a what-if never
+        silently evaluates fewer levers than it was given.
+        """
         day0 = state.day
         known = c.visible(known_events, day0)
-        s, _ = self.apply_levers(state, levers, day0)
+        s, rejections = self.apply_levers(state, levers, day0)
+        if rejections:
+            raise ValueError("whatif: invalid levers: " + "; ".join(f"{r.lever.kind}: {r.reason}" for r in rejections))
         by_day: list[c.Kpis] = []
         for dem in self.forecast_demand(s, day0, days, known):
             s = s.copy()

@@ -232,7 +232,7 @@ def test_events_bite(twin):
     base = run(twin, {}, days=[61])[1][0].kpis
     ev = c.Event(event_id="e", kind="rack_damage", day=61, args={"aisle": 12, "days": 3}, announced_day=61, source="scripted")
     s, res, _ = run(twin, {}, days=[61], events_by_day={61: [ev]})
-    assert twin.view(s).closed_aisles == [12]
+    assert twin.view(s).frozen_aisles == [12] and twin.view(s).closed_aisles == []  # damaged: open, no moves
     assert res[0].hourly["hours"][0]["frozen_aisles"] == [12]
     short = c.Event(event_id="e2", kind="labor_shortage", day=61, args={"pool": "forklift", "pct": 50, "days": 1},
                     announced_day=61, source="scripted")
@@ -483,3 +483,75 @@ def test_real_night_safety_monotone_and_below_limit(real_twin):
         assert presence[100] <= presence[200] + 1e-6 <= presence[280] + 1e-6, (d, presence)
         s, _ = real_twin.apply_levers(s, [reslot(200, f"d{d}")], d)
         s, _ = real_twin.step_day(s, d, real_twin.actual_demand(d), [])
+
+
+# ----------------------------------------------------------------------------- QA items 2, 4, 5, 6
+def test_staging_clearance_frees_staging(twin):
+    """After a night that could not finish its swaps, staging_clearance lowers staging occupancy."""
+    base = c.Scenario(id="sc", seed=3, days=(61, 70))
+    s = twin.initial_state(base)
+    s, _ = twin.apply_levers(s, [reslot(3000, "d"), c.HireTemps(count=8, start_day=61, days=2, decision_id="d")], 61)
+    s, r61 = twin.step_day(s, 61, twin.actual_demand(61), [])
+    in_flight = sum(1 for m in s.moves if 0 < m.legs_done < m.legs)
+    if in_flight == 0:
+        pytest.skip("mini plan finished in one night; nothing to clear")
+    assert twin.view(s).staging_occupancy > 0
+    s_plain, r_plain = twin.step_day(s, 62, twin.actual_demand(62), [])
+    s_clear, _ = twin.apply_levers(s, [c.StagingClearance(n_movers=4, decision_id="c")], 62)
+    s_clear, r_clear = twin.step_day(s_clear, 62, twin.actual_demand(62), [])
+    assert r_clear.kpis.staging_occupancy_max <= r_plain.kpis.staging_occupancy_max
+    w0 = twin.whatif(s, [], 1, [])
+    w1 = twin.whatif(s, [c.StagingClearance(n_movers=4, decision_id="c")], 1, [])
+    assert w1.kpis_total.staging_occupancy_max <= w0.kpis_total.staging_occupancy_max
+
+
+def test_rack_damage_open_aisle_risk_and_close_aisle(twin):
+    ev = c.Event(event_id="rd", kind="rack_damage", day=61, args={"aisle": 12, "days": 3}, announced_day=61, source="scripted")
+    s0 = twin.initial_state(SC)
+    _, r_base = twin.step_day(s0, 61, twin.actual_demand(61), [])
+    s_dmg, r_dmg = twin.step_day(s0, 61, twin.actual_demand(61), [ev])
+    risk = lambda r: max(h["safety_risk"][11] for h in r.hourly["hours"])  # noqa: E731
+    assert risk(r_dmg) > risk(r_base)
+    assert twin.view(s_dmg).frozen_aisles == [12] and twin.view(s_dmg).closed_aisles == []
+    s_cl, _ = twin.apply_levers(s0, [c.CloseAisle(aisle=12, days=3, decision_id="d")], 61)
+    s_cl, r_cl = twin.step_day(s_cl, 61, twin.actual_demand(61), [ev])
+    assert risk(r_cl) == 0.0 and twin.view(s_cl).closed_aisles == [12]
+    assert r_cl.kpis.safety_risk_max <= r_dmg.kpis.safety_risk_max
+
+
+def test_leadership_visit_freezes_aisles_for_moves(twin):
+    s0 = twin.initial_state(SC)
+    aisles = sorted({int(twin.inputs.loc_aisle[m.to_loc]) for m in s0.moves if twin.inputs.loc_aisle[m.to_loc] > 0} |
+                    {int(twin.inputs.loc_aisle[s0.sku_loc[m.sku]]) for m in s0.moves if twin.inputs.loc_aisle[s0.sku_loc[m.sku]] > 0})
+    ev = c.Event(event_id="lv", kind="leadership_visit", day=61, args={"no_moves_in_aisles": aisles}, announced_day=56, source="scripted")
+    s, _ = twin.apply_levers(s0, [reslot(200, "d")], 61)
+    s, r = twin.step_day(s, 61, twin.actual_demand(61), [ev])
+    assert r.hourly["hours"][0]["frozen_aisles"] == aisles
+    touched = {int(twin.inputs.loc_aisle[m.to_loc]) for m in s.moves if m.legs_done > 0 and twin.inputs.loc_aisle[m.to_loc] > 0}
+    assert not (touched & set(aisles))
+    s2, _ = twin.apply_levers(s0, [reslot(200, "d")], 61)
+    _, r2 = twin.step_day(s2, 61, twin.actual_demand(61), [])
+    assert r.kpis.moves_done < r2.kpis.moves_done
+
+
+def test_whatif_raises_on_invalid_levers(twin):
+    s = twin.initial_state(SC)
+    with pytest.raises(ValueError) as e:
+        twin.whatif(s, [reslot(50, "w", include_zones=[9]), c.CloseAisle(aisle=99, days=1, decision_id="w")], 2, [])
+    assert "zone" in str(e.value) and "99" in str(e.value)
+
+
+def test_real_staging_clearance_after_big_bang_night(real_twin):
+    sc = load_scenario("reslot_default")
+    s = real_twin.initial_state(sc)
+    s, _ = real_twin.apply_levers(s, [reslot(1200, "d"), c.HireTemps(count=8, start_day=61, days=2, decision_id="d")], 61)
+    s, r61 = real_twin.step_day(s, 61, real_twin.actual_demand(61), [])
+    assert r61.kpis.staging_occupancy_max > 90 and real_twin.view(s).staging_occupancy > 20
+    s_plain, r_plain = real_twin.step_day(s, 62, real_twin.actual_demand(62), [])
+    s_clear, _ = real_twin.apply_levers(s, [c.StagingClearance(n_movers=4, decision_id="c")], 62)
+    s_clear, r_clear = real_twin.step_day(s_clear, 62, real_twin.actual_demand(62), [])
+    assert r_clear.kpis.staging_occupancy_max < r_plain.kpis.staging_occupancy_max  # 100% -> ~25% night peak
+    assert r_clear.kpis.moves_done >= r_plain.kpis.moves_done - 20
+    w0 = real_twin.whatif(s, [], 1, [])
+    w1 = real_twin.whatif(s, [c.StagingClearance(n_movers=4, decision_id="c")], 1, [])
+    assert w1.kpis_total.staging_occupancy_max < w0.kpis_total.staging_occupancy_max

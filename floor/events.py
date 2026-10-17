@@ -19,10 +19,11 @@ def apply_events(state: FloorState, events: list[c.Event], day: int) -> None:
         cause = c.node_id(c.EVT, e.event_id)
         kind = e.kind
         if kind == "rack_damage":
+            # the aisle stays open (picking continues at extra risk, no moves) until the org closes it
             a = int(e.args.get("aisle", 0))
             if 1 <= a <= K.N_AISLES:
-                prev = state.closed_aisles.get(a, (0, None))[0]
-                state.closed_aisles[a] = (max(prev, until), cause)
+                prev = state.damaged_aisles.get(a, (0, None))[0]
+                state.damaged_aisles[a] = (max(prev, until), cause)
         elif kind == "aisle_closure":
             a = int(e.args.get("aisle", 0))
             if 1 <= a <= K.N_AISLES:

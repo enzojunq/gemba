@@ -42,6 +42,7 @@ CONGESTION_TIME = 1.10
 CONGESTION_THRESHOLD = 90.0     # staging % above which adjacent aisles slow down
 STAGING_ADJACENT_AISLES = (1, 2)
 CONGESTION_PEOPLE = 0.5         # trucks feeding a congested staging area add this to each adjacent aisle's presence
+DAMAGED_AISLE_PEOPLE = 1.0      # a rack-damaged aisle that stays open carries this extra presence per hour (repair crew / debris); closing it zeroes its risk
 MAX_MOVERS_PER_AISLE = 2        # the night supervisor never parks more than this many regular movers in one aisle-hour; temps are not dispatched (untrained)
 FROZEN_TO_PALLET = 1.5
 PM_FLEX_PENALTY = 1.25          # a picker helping another zone / the PM works this much slower
