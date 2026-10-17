@@ -62,37 +62,34 @@ def _serve(pending: np.ndarray, work: np.ndarray, cap: float) -> tuple[np.ndarra
     return served, used
 
 
-def apply_surge(inputs: Inputs, demand: c.DayDemand, effects: list) -> c.DayDemand:
-    """demand_surge: duplicate the lines of the surged family/skus/customer (factor - 1) times."""
+def apply_surge(inputs: Inputs, demand: c.DayDemand, effects: list, seed: int = 0) -> c.DayDemand:
+    """demand_surge: resample the lines of the surged family/skus/customer by `factor` (seeded)."""
     if not effects:
         return demand
+    from floor.perturb import scale_lines
     lines, orders = demand.lines, demand.orders
-    extra = []
+    if len(lines) == 0:
+        return demand
+    factor = np.ones(len(lines))
+    idx = lines["sku_id"].map(inputs.sku_index).fillna(-1).to_numpy(dtype=np.int64)
     for e in effects:
         f = float(e.args.get("factor", 1.5))
-        reps = max(int(round(f)) - 1, 0)
-        if reps == 0:
-            continue
         if e.args.get("family"):
             fmask = inputs.family_mask(str(e.args["family"]))
-            idx = lines["sku_id"].map(inputs.sku_index).fillna(-1).to_numpy(dtype=np.int64)
-            mask = pd.Series((idx >= 0) & fmask[np.where(idx >= 0, idx, 0)], index=lines.index)
+            mask = (idx >= 0) & fmask[np.where(idx >= 0, idx, 0)]
         elif e.args.get("skus"):
-            mask = lines["sku_id"].isin(list(e.args["skus"]))
+            mask = lines["sku_id"].isin(list(e.args["skus"])).to_numpy()
         elif e.args.get("customer"):
             cust = orders.set_index("order_id")["customer_id"]
-            mask = lines["order_id"].map(cust).eq(inputs.customer_alias(str(e.args["customer"])))
+            mask = lines["order_id"].map(cust).eq(inputs.customer_alias(str(e.args["customer"]))).to_numpy()
         else:
             continue
-        sub = lines[mask]
-        for k in range(1, reps + 1):
-            d = sub.copy()
-            d["line_no"] = d["line_no"] + 1000 * k
-            extra.append(d)
-    if not extra:
+        factor = factor * np.where(mask, f, 1.0)
+    if np.allclose(factor, 1.0):
         return demand
-    new_lines = pd.concat([lines, *extra], ignore_index=True).sort_values(["order_id", "line_no"], kind="stable")
-    return c.DayDemand(day=demand.day, orders=orders, lines=new_lines.reset_index(drop=True))
+    codes = order_codes(lines["order_id"])
+    new_lines = scale_lines(lines, factor, seed, demand.day, 11, codes)
+    return c.DayDemand(day=demand.day, orders=orders, lines=new_lines)
 
 
 def _headcount(state: FloorState, day: int) -> dict[str, dict[str, float]]:
@@ -114,7 +111,7 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
     s.inventory = s.inventory.astype(float)
     violations: list[str] = list(s.violations_pending)
     s.violations_pending = []
-    demand = apply_surge(inputs, demand, s.effect_active("demand_surge", day))
+    demand = apply_surge(inputs, demand, s.effect_active("demand_surge", day), s.seed)
     orders, lines = demand.orders, demand.lines
     n_orders, n_lines = len(orders), len(lines)
 

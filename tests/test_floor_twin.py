@@ -310,3 +310,83 @@ def test_real_30_day_loop_with_baselines(real_twin):
             assert r.kpis.lines > 0
         if policy.name == "static":
             assert real_twin.view(s).reslot_progress_pct > 80
+
+
+# ----------------------------------------------------------------------------- perturbation (spec 13.1)
+def test_perturbation_changes_kpis_and_empty_is_identity(twin):
+    base = c.Scenario(id="p0", seed=3, days=(61, 70), events=[c.ScenarioEvent(kind="demand_surge", day=62, args={"family": "F001", "factor": 2, "days": 2})])
+    pert = base.model_copy(update={"id": "p1", "perturbation": {"family_scale_pct": 10, "seasonal_group_seed": 5, "surge_shift_days": 1}})
+    _, r0, _ = run(twin, {}, days=[61], scenario=base)
+    _, r0b, _ = run(twin, {}, days=[61], scenario=base)
+    _, r1, _ = run(twin, {}, days=[61], scenario=pert)
+    assert r0[0].model_dump_json() == r0b[0].model_dump_json()
+    assert r1[0].kpis != r0[0].kpis
+    # a second perturbed run is identical (deterministic from seed + perturbation)
+    _, r1b, _ = run(twin, {}, days=[61], scenario=pert)
+    assert r1[0].model_dump_json() == r1b[0].model_dump_json()
+    # surge shift: with shift 1 the surge bites on day 63 instead of 62
+    s = twin.initial_state(pert)
+    assert s.surge_shift == 1 and any(e.kind == "demand_surge" and e.start_day == 63 for e in s.effects)
+    ev = c.Event(event_id="x", kind="demand_surge", day=62, args={"family": "F001", "factor": 2, "days": 2}, announced_day=60, source="scripted")
+    s, r62 = twin.step_day(s, 62, twin.actual_demand(62), [ev])
+    s, r63 = twin.step_day(s, 63, twin.actual_demand(63), [])
+    raw62, raw63 = len(twin.actual_demand(62).lines), len(twin.actual_demand(63).lines)
+    assert r62.kpis.lines == raw62 and r63.kpis.lines > raw63
+
+
+def test_canonical_scenarios_load_with_perturbation(twin):
+    for n in ("train_1", "train_2", "train_3", "test_1", "test_2", "test_3"):
+        sc = load_scenario(n)
+        s = twin.initial_state(sc)
+        assert twin.view(s).day == sc.days[0]
+
+
+# ----------------------------------------------------------------------------- real-db: moves drive routing, hero cascade
+def test_real_executed_moves_drive_routing(real_twin):
+    from eval.baselines import StaticRules
+    from floor.calibrate import _loop
+
+    sc = load_scenario("reslot_default")
+    s0 = real_twin.initial_state(sc)
+    loc0 = s0.sku_loc.copy()
+    inp = real_twin.inputs
+    pm_share = lambda st: float(inp.velocity_hist[inp.loc_kind[np.where(st.sku_loc >= 0, st.sku_loc, 0)] == 0].sum() / inp.velocity_hist.sum())  # noqa: E731
+    share0 = pm_share(s0)
+    s = s0
+    for d in range(61, 71):
+        s, _ = real_twin.apply_levers(s, [reslot(200, f"d{d}")], d)
+        s, r = real_twin.step_day(s, d, real_twin.actual_demand(d), [])
+        if d == 61:
+            assert int(s.dip_mask(62).sum()) > 0  # moved SKUs enter the learning dip
+    moved = np.flatnonzero(s.sku_loc != loc0)
+    assert len(moved) > 300 and s.moves_done_total >= 1800  # spec 7.1: ~2,400 legs, 12 nights at 200
+    assert pm_share(s) > share0 + 0.1  # routing follows the executed slotting
+    assert all(s.sku_loc[m.sku] == m.to_loc for m in s.moves if m.legs_done >= m.legs and m.legs > 0)
+    assert int(s.dip_mask(80).sum()) == 0  # dip timers expire
+    # executed layout vs oracle (target applied instantly) agree on PM load within 10% at equal progress
+    rows = _loop(real_twin, sc, StaticRules("rs"), 25)
+    orc = _loop(real_twin, sc, StaticRules("or"), 25, oracle=True)
+    tail_exec = np.mean([r["pm_peak_zone_load"] for r in rows[-3:]])
+    tail_orc = np.mean([r["pm_peak_zone_load"] for r in orc[-3:]])
+    assert rows[-1]["reslot_progress_pct"] > 90
+    assert abs(tail_exec - tail_orc) / tail_orc < 0.10
+
+
+def test_real_hero_cascade_under_big_bang(real_twin):
+    from eval.baselines import NaiveBigBang
+
+    sc = load_scenario("reslot_default")
+    fired = []
+    for seed in (1, 2, 3):
+        policy = NaiveBigBang(f"bb{seed}")
+        s = real_twin.initial_state(sc.model_copy(update={"seed": seed}))
+        pending: list[c.Event] = []
+        for d in range(61, 66):
+            dec = policy.decide(d, real_twin.view(s), [], real_twin, s)
+            s, _ = real_twin.apply_levers(s, dec.levers, d)
+            s, r = real_twin.step_day(s, d, real_twin.actual_demand(d), [])
+            pending += real_twin.consequences(s, r, policy.run_id)
+        c2 = [e for e in pending if e.kind == "customer_escalation"]
+        if c2:
+            fired.append((seed, c2[0].caused_by))
+    assert fired and all(cb.startswith("dec:") for _, cb in fired), fired

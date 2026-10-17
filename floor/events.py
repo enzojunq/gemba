@@ -41,6 +41,8 @@ def apply_events(state: FloorState, events: list[c.Event], day: int) -> None:
                                               start_day=day, start_hour=int(e.hour)))
         elif kind in ("labor_shortage", "absenteeism", "forklift_breakdown", "demand_surge", "key_customer_week",
                       "wms_sync_delay", "returns_spike", "new_sku_launch"):
+            if kind == "demand_surge" and state.surge_shift and e.source == "scripted":
+                continue  # already in `effects`, shifted by the scenario perturbation
             if kind == "new_sku_launch":
                 until = day + 6   # unslotted for a week (stub)
             state.effects.append(ActiveEffect(kind=kind, event_id=e.event_id, until_day=until, args=dict(e.args),

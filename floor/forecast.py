@@ -13,7 +13,7 @@ from floor.inputs import Inputs
 from floor.model import FloorState
 
 
-def forecast_day(inputs: Inputs, state: FloorState, d: int, today: int, known: list[c.Event]) -> c.DayDemand:
+def forecast_day(inputs: Inputs, state: FloorState, d: int, today: int, known: list[c.Event], perturb=None) -> c.DayDemand:
     """Forecast for day `d` built from actual days < `today` only."""
     src_days = [x for x in (d - 7, d - 14, d - 21) if 1 <= x < today and x in inputs.day_slices]
     if not src_days:
@@ -29,6 +29,13 @@ def forecast_day(inputs: Inputs, state: FloorState, d: int, today: int, known: l
     orders = pool_o.iloc[pick].copy()
     src_ids = orders["order_id"].to_numpy()
     lines = inputs.lines[inputs.lines["order_id"].isin(src_ids) & inputs.lines["day"].isin(src_days)].copy()
+    if perturb is not None:
+        parts = []
+        for sd in src_days:
+            sub = lines[lines["day"] == sd]
+            if len(sub):
+                parts.append(perturb(c.DayDemand(day=d, orders=orders, lines=sub.reset_index(drop=True)), sd).lines)
+        lines = pd.concat(parts, ignore_index=True) if parts else lines
     new_id = {o: f"f{d}-{i:05d}" for i, o in enumerate(src_ids)}
     orders["order_id"] = orders["order_id"].map(new_id)
     lines["order_id"] = lines["order_id"].map(new_id)
@@ -86,9 +93,9 @@ def forecast_day(inputs: Inputs, state: FloorState, d: int, today: int, known: l
                        lines=lines[["order_id", "line_no", "sku_id", "qty"]])
 
 
-def forecast_demand(inputs: Inputs, state: FloorState, day: int, horizon: int, known_events: list[c.Event]) -> list[c.DayDemand]:
+def forecast_demand(inputs: Inputs, state: FloorState, day: int, horizon: int, known_events: list[c.Event], perturb=None) -> list[c.DayDemand]:
     known = c.visible(known_events, day)
-    return [forecast_day(inputs, state, d, day, known) for d in range(day, day + horizon)]
+    return [forecast_day(inputs, state, d, day, known, perturb) for d in range(day, day + horizon)]
 
 
 def recalibrate(inputs: Inputs, state: FloorState, actual: list[c.DayResult], predicted: list[c.Kpis]) -> FloorState:

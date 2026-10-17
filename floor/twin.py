@@ -16,7 +16,8 @@ from floor import forecast as fc
 from floor import levers as lv
 from floor import phaser, sim
 from floor.inputs import Inputs, load_inputs
-from floor.model import FloorState
+from floor.model import ActiveEffect, FloorState
+from floor.perturb import Perturbation, scale_lines
 
 POOLS: tuple[str, ...] = c.Pool.__args__  # type: ignore[attr-defined]
 SHIFTS: tuple[str, ...] = c.Shift.__args__  # type: ignore[attr-defined]
@@ -48,6 +49,7 @@ class Twin:
     def __init__(self, inputs_url: str | None = None, inputs: Inputs | None = None):
         self.inputs: Inputs = inputs if inputs is not None else load_inputs(inputs_url or os.environ.get("INPUTS_DB_URL"))
         self.seed = 1
+        self.pert: Perturbation | None = None
 
     # ------------------------------------------------------------------ protocol
     def initial_state(self, scenario: c.Scenario) -> FloorState:
@@ -73,6 +75,14 @@ class Twin:
         plan.sort(key=lambda m: (-(m.value / m.legs), m.sku))
         st.moves = plan
         st.moves_target_total = sum(m.legs for m in plan)
+        self.pert = Perturbation.build(inp, scenario.seed, scenario.perturbation)
+        if self.pert.surge_shift_days:
+            st.surge_shift = self.pert.surge_shift_days
+            for i, e in enumerate(scenario.events):
+                if e.kind == "demand_surge":
+                    d0 = e.day + st.surge_shift
+                    st.effects.append(ActiveEffect(kind="demand_surge", event_id=f"shifted-surge-{i}", start_day=d0,
+                                                   until_day=d0 + int(e.args.get("days", 1)) - 1, args=dict(e.args), start_hour=e.hour))
         return st
 
     def view(self, state: FloorState) -> c.FloorView:
@@ -99,7 +109,17 @@ class Twin:
         return lv.apply_levers(self.inputs, state, levers, day)
 
     def actual_demand(self, day: int) -> c.DayDemand:
-        return self.inputs.demand(day)
+        return self.perturb(self.inputs.demand(day), day)
+
+    def perturb(self, demand: c.DayDemand, source_day: int) -> c.DayDemand:
+        """Apply the scenario perturbation to lines taken from `source_day` (no-op when empty)."""
+        if self.pert is None or self.pert.empty or len(demand.lines) == 0:
+            return demand
+        f = self.pert.factor_for(source_day)
+        idx = demand.lines["sku_id"].map(self.inputs.sku_index).fillna(-1).to_numpy(dtype=np.int64)
+        per_line = np.where(idx >= 0, f[np.where(idx >= 0, idx, 0)], 1.0)
+        lines = scale_lines(demand.lines, per_line, self.pert.seed, demand.day, 13, sim.order_codes(demand.lines["order_id"]))
+        return c.DayDemand(day=demand.day, orders=demand.orders, lines=lines)
 
     def step_day(self, state: FloorState, day: int, demand: c.DayDemand, events: list[c.Event]) -> tuple[FloorState, c.DayResult]:
         s = state.copy()
@@ -111,7 +131,11 @@ class Twin:
         return cons.consequences(state, result, run_id)
 
     def forecast_demand(self, state: FloorState, day: int, horizon: int, known_events: list[c.Event]) -> list[c.DayDemand]:
-        return fc.forecast_demand(self.inputs, state, day, horizon, known_events)
+        known = known_events
+        if state.surge_shift:
+            known = [e.model_copy(update={"day": e.day + state.surge_shift}) if e.kind == "demand_surge" and e.source == "scripted" else e
+                     for e in known_events]
+        return fc.forecast_demand(self.inputs, state, day, horizon, known, perturb=self.perturb if self.pert and not self.pert.empty else None)
 
     def whatif(self, state: FloorState, levers: list[c.Lever], days: int, known_events: list[c.Event]) -> c.WhatIf:
         """Levers apply on the first day of the horizon; forecast demand only; expected values, no draws."""
