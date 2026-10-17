@@ -113,6 +113,11 @@ def _approve_tonight(inputs: Inputs, s: FloorState, lv: c.ReslotTonight, day: in
     frozen = s.frozen_now(day) + s.closed_now(day)
     budget = lv.n_moves if s.legs_per_night is None else min(lv.n_moves, s.legs_per_night)
     chosen = phaser.select_tonight(ranked, budget, lv.include_zones, exclude, protect, frozen, lv.order, inputs)
+    remaining = s.queue_legs()
+    if not chosen and remaining > 0:
+        s.violations_pending.append(
+            f"reslot_tonight ({lv.decision_id}): {remaining} legs remain but none are selectable tonight "
+            f"(protected skus/zones/customers: {len(protect)} skus, {len(pz)} zones; frozen or closed aisles: {sorted(set(frozen))})")
     seq0 = max((m.seq for m in s.moves), default=0) + 1
     for i, r in enumerate(chosen):
         m = r["_move"]

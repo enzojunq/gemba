@@ -118,6 +118,14 @@ class FloorState:
     def queue_legs(self) -> int:
         return sum(m.legs - m.legs_done for m in self.moves if m.legs_done < m.legs)
 
+    def progress_pct(self) -> float:
+        """Reslot progress: legs no longer pending over the plan's legs. A swap that turns into a direct
+        move (its slot emptied meanwhile) executes fewer legs than planned, so this counts remaining
+        work, not executed legs; it reads 100 when the queue is empty."""
+        if not self.moves_target_total:
+            return 100.0
+        return round(100.0 * (self.moves_target_total - self.queue_legs()) / self.moves_target_total, 3)
+
     def staging_pct(self) -> float:
         return 100.0 * len(self.staging) / K.STAGING_SLOTS
 

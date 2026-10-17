@@ -544,7 +544,7 @@ def simulate_day(inputs: Inputs, state: FloorState, day: int, demand: c.DayDeman
     near = near_exp if expected else float(len(near_draws))
     s.near_misses.extend(near_draws)
     queue_legs = s.queue_legs()
-    progress = 100.0 * s.moves_done_total / s.moves_target_total if s.moves_target_total else 100.0
+    progress = s.progress_pct()
     kpis = c.Kpis(
         lines=int(n_lines), lph=round(lph, 3), throughput_lph_site=round(served_lines / 16.0, 3),
         on_time_pct=round(on_time_pct, 3), mispick_rate=round(mispick_rate, 4), pm_peak_zone_load=round(pm_peak, 3),

@@ -102,7 +102,7 @@ class Twin:
             protected=state.protections_active(d), staging_occupancy=round(state.staging_pct(), 2),
             move_queue=int(queue), moves_done_total=int(state.moves_done_total),
             moves_target_total=int(state.moves_target_total),
-            reslot_progress_pct=round(100.0 * state.moves_done_total / state.moves_target_total, 3) if state.moves_target_total else 100.0,
+            reslot_progress_pct=state.progress_pct(),
             labor_available=labor, temps_active=state.temps_active(d),
             learning_dip_skus=int(state.dip_mask(d).sum()), overtime_days_last4=ot_days,
         )

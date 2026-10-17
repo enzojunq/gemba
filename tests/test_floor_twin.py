@@ -421,3 +421,19 @@ def test_real_override_forklift_10_lowers_on_time(real_twin):
     _, r1, _ = run(real_twin, {}, days=[61], scenario=short)
     assert real_twin.view(real_twin.initial_state(short)).labor_available["day"]["forklift"] == 10
     assert r1[0].kpis.on_time_pct < r0[0].kpis.on_time_pct
+
+
+def test_progress_reaches_100_and_stall_is_visible(twin):
+    s = twin.initial_state(SC)
+    for d in range(61, 70):
+        s, _ = twin.apply_levers(s, [reslot(500, f"d{d}")], d)
+        s, r = twin.step_day(s, d, twin.actual_demand(d), [])
+    v = twin.view(s)
+    assert v.move_queue == 0 and v.reslot_progress_pct == 100.0 and r.kpis.reslot_progress_pct == 100.0
+    # every SKU protected: the plan cannot advance and the day result says why
+    s = twin.initial_state(SC)
+    all_skus = twin.inputs.skus["sku_id"].tolist()
+    s, _ = twin.apply_levers(s, [c.Protect(target="skus", ids=all_skus, days=5, decision_id="p"), reslot(200, "d")], 61)
+    s, r = twin.step_day(s, 61, twin.actual_demand(61), [])
+    assert r.kpis.moves_done == 0 and twin.view(s).move_queue > 0
+    assert any("none are selectable" in v for v in r.violations)
