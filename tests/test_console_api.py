@@ -248,3 +248,21 @@ def test_bearer_token_guards_writes(client, monkeypatch, scenario_cleanup):
     ok = client.post("/scenarios", json={"yaml": VALID_YAML}, headers={"Authorization": "Bearer s3cret"})
     assert ok.status_code == 200 and ok.json()["ok"]
     assert client.get("/scenarios").status_code == 200  # reads stay open
+
+
+def test_describe_uses_designer_without_network(client, monkeypatch):
+    """The endpoint's shape over B's describe(), with the LLM replaced by a canned result."""
+    import importlib
+    sd = importlib.import_module("org.scenario_designer")
+    canned = {"ok": True, "yaml": "id: peak_week\nseed: 1\ndays: [61, 70]\nevents: []\n",
+              "scenario": {"id": "peak_week", "seed": 1, "days": [61, 70], "events": []}, "errors": [],
+              "dropped": ["event 2 (pm_zone_down): zone 9 not in 1-6"], "summary": "Peak week rehearsal.",
+              "confidence": 0.9, "draft": None, "calls": 1}
+    monkeypatch.setattr(sd, "describe", lambda text, llm=None, **kw: canned)
+    j = client.post("/scenarios/describe", json={"text": "peak week"}).json()
+    assert j["ok"] and j["scenario"]["id"] == "peak_week" and j["summary"] == "Peak week rehearsal."
+    assert j["confidence"] == 0.9 and j["dropped"] == canned["dropped"] and j["yaml"].startswith("id: peak_week")
+    bad = dict(canned, ok=False, scenario={}, errors=["not a scenario request (confidence 0.2)"], confidence=0.2)
+    monkeypatch.setattr(sd, "describe", lambda text, llm=None, **kw: bad)
+    j = client.post("/scenarios/describe", json={"text": "what time is lunch"}).json()
+    assert not j["ok"] and "not a scenario" in j["errors"][0] and j["scenario"] == {}

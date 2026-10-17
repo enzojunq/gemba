@@ -870,12 +870,17 @@ def describe_scenario(body: DescribeIn) -> dict:
     """Plain words -> scenario draft via B's org.scenario_designer (lazy; 503 if absent)."""
     try:
         from llm.client import LLM
-        from org.scenario_designer import design_scenario
+        from org import scenario_designer as sd
     except Exception as exc:
         raise HTTPException(503, {"error": "the scenario designer is not available in this checkout",
                                   "detail": str(exc), "hint": "build the scenario by hand in the dialog"})
-    raw, errors, draft = design_scenario(LLM(), body.text)
-    return {"ok": not errors, "scenario": raw, "errors": errors,
+    if hasattr(sd, "describe"):  # richer shape: dropped-event notes, yaml, calls
+        r = sd.describe(body.text, llm=LLM())
+        return {"ok": bool(r.get("ok")), "scenario": r.get("scenario") or {}, "yaml": r.get("yaml", ""),
+                "errors": list(r.get("errors") or []), "dropped": list(r.get("dropped") or []),
+                "confidence": r.get("confidence"), "summary": r.get("summary") or "", "calls": r.get("calls")}
+    raw, errors, draft = sd.design_scenario(LLM(), body.text)
+    return {"ok": not errors, "scenario": raw, "errors": errors, "dropped": [],
             "confidence": getattr(draft, "confidence", None), "summary": getattr(draft, "summary", None)}
 
 

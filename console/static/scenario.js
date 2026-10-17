@@ -24,6 +24,7 @@ export class ScenarioDialog {
   }
 
   reset(defaults = {}) {
+    $("#sc-summary", this.dlg).hidden = true;
     $("#sc-id", this.dlg).value = "";
     $("#sc-seed", this.dlg).value = 1000 + Math.floor(Math.random() * 9000);
     $("#sc-d0", this.dlg).value = 61; $("#sc-d1", this.dlg).value = 90;
@@ -206,7 +207,13 @@ export class ScenarioDialog {
       for (const [shift, pools] of Object.entries(((raw.overrides || {}).headcounts) || {})) for (const [pool, n] of Object.entries(pools || {})) if (this.headcounts[shift]) this.headcounts[shift][pool] = n;
       this.renderHeadcounts(); this.renderEvents();
       this.setErrors(j.errors || []);
-      if (j.summary) this.toast(`${j.summary}${j.confidence != null ? ` (confidence ${Math.round(j.confidence * 100)}%)` : ""}`);
+      const sum = $("#sc-summary", this.dlg);
+      const bits = [];
+      if (j.summary) bits.push(j.summary);
+      if (j.confidence != null) bits.push(`confidence ${Math.round(j.confidence * 100)}%`);
+      for (const d of j.dropped || []) bits.push(`dropped: ${d}`);
+      sum.hidden = !bits.length; sum.innerHTML = bits.map((b, i) => `<span class="${i === 0 && j.summary ? "sc-summary-t" : "sc-summary-m"}">${esc(b)}</span>`).join(" · ");
+      sum.classList.toggle("is-bad", !j.ok);
     } finally { btn.disabled = false; btn.textContent = "Draft from words"; }
   }
 

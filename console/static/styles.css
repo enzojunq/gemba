@@ -582,3 +582,7 @@ body.is-compare #btn-play, body.is-compare #speed, body.is-compare #btn-fork, bo
 .sc-spacer { flex: 1; }
 .is-invalid { border-color: var(--red) !important; }
 @media (max-width: 1100px) { .sc-grid { grid-template-columns: 1fr; } .sc-head { grid-template-columns: 1fr auto auto; } .sc-head .dlg-lede { grid-column: 1 / -1; } }
+.sc-summary { margin: -4px 0 0; padding: 6px 10px; border-radius: 8px; background: var(--amber-dim); font-size: 13.5px; line-height: 1.4; }
+.sc-summary.is-bad { background: var(--red-dim); }
+.sc-summary-t { font-weight: 600; color: var(--text); }
+.sc-summary-m { color: var(--text-2); }
