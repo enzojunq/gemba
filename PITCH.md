@@ -113,8 +113,8 @@ rehearses a peak season or a WMS cutover, and sits in tomorrow's real standup as
 - Efficiency-first `bt-449cd50d`: on-time 95.6, mis-pick 0.41, LPH +20.8%, 100%, $0.26.
 - Fork `fk-3b1e986f` (pause 3 at 69): identical 8/8 days before, different 22/22 after; both 100% on day 79.
 - Naive big bang `ev-98548726`: `dec:d61` → staging_congestion d62 → customer_escalation d64 →
-  director_escalation d65; calibration run: 8 jam hours, mis-picks 1.2–1.6%, staging full three nights
-  (A's DEMO.md says 18 jam hours; reconcile before stage).
+  director_escalation d65. On final code (`ev-a960a7b5`): 18 jam hours over the month, 8 of them on day 63;
+  mis-picks 1.2–1.6% on days 62–63; staging full three nights. (Reconciled with A, COMMS A-11.)
 - Tests: 308 passing. Models: every call on Nemotron 3 Super (Ultra not in the catalog today).
 - Lesson rule: fork applied the alternative, delta > 0.01 over the next 5 days, no new hard-limit breach, no
   LLM fallback in the window. Gate: mean score up and violations not up on test_1..3 (two unseen event kinds).
