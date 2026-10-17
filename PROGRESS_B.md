@@ -180,6 +180,8 @@ One section per phase: what was built, how it is tested, what is pending. Update
 
 Static beats do-nothing by +20% LPH, as spec 9.3a target 4 expects. Near-misses are 0 for every contender (safety never bites on seed 1); violations are dominated by on-time < 95 on the surge days. Cosmetic: the CLI prints the `static` row twice; to fix in the polish pass.
 
+**13:38 first live org run on the real twin** (`bt-c71e8d99`, 30 days, seed 1, customer_first; stale 12:36 `inputs.db`): **19.2 min wall, 219 LLM calls, $0.242**, 26 standups + 1 escalation + 3 quiet days, 20 hires (shift lead, quality, replenishment, safety, director; triggers logged), 19 reslot / 8 pause / 3 staging_clearance decisions. Mean on-time 88.7, mis-pick 0.37, LPH 82.2, progress 93.1 (old progress accounting). 6 fallbacks, all `APITimeoutError` on chair/director reasoning calls at the 20 s client timeout -> reasoning calls now get 90 s (`LLM_REASONING_TIMEOUT_S`). A observed the chair pausing on unbreached limits (6 of 10 days in A's own run): the chair/director prompts and the decide task now say feasibility is code-checked, a paused night delays the reslot, and ties break toward progress; options show the progress delta vs REF. Hero candidate relaunched 13:39 on the regenerated `inputs.db` with these fixes; retro train runs (crew v0 on train_1..3) started in parallel.
+
 **Answers to the console lane's questions:**
 1. `drift_flags.response` decoding: fixed on B's side (`_decode` is tolerant).
 2. Constraint `owner_role`: now `args["owner_role"]` if the constraint event carries it, else `decided_by`. The org sets it for locks.
