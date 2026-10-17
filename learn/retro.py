@@ -505,7 +505,25 @@ def coach(llm: Any, store: RunStore, regret: RegretDay, tr: Trace) -> tuple[Coac
         except Exception:  # noqa: BLE001
             log.exception("could not log coach fallback")
         return fb, True
-    return out, False
+    # The coach is not in a standup, so its levers skip the room's validation; apply the same rules here
+    # (pass-2 lesson 1 proposed labor_allocate headcount 30, the floor refused it, the fork never applied it).
+    from types import SimpleNamespace
+    from org.standup import OrgPolicy
+    me = SimpleNamespace(profile=SimpleNamespace(budgets={}))
+    normalize = getattr(OrgPolicy, "_normalize", None)
+    lever_error = getattr(OrgPolicy, "_lever_error", None)
+    if normalize is None or lever_error is None:  # a test double stands in for OrgPolicy
+        return out, False
+    kept, dropped = [], []
+    for lv in normalize(list(out.alternative_levers)):
+        err = lever_error(me, lv)
+        (kept if err is None else dropped).append(lv if err is None else f"{lv.kind}: {err}")
+    if dropped:
+        log.warning("retro coach levers dropped for %s day %s: %s", regret.run_id, regret.day, dropped)
+    if not kept:
+        log.warning("retro coach proposed no valid lever for %s day %s; no lesson", regret.run_id, regret.day)
+        return fb, True
+    return out.model_copy(update={"alternative_levers": kept}), False
 
 
 # --------------------------------------------------------------------------- 4. verify
