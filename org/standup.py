@@ -498,6 +498,8 @@ class OrgPolicy:
         return out
 
     def _log_transport(self, role_id: str, tier: str, e: Exception) -> None:
+        if type(e).__name__ == "RateLimitError":
+            self._serial = True
         row = {"call_id": uuid.uuid4().hex, "run_id": self.run_id, "day": self._day, "role": role_id,
                "model": "(transport)", "request": {"error": type(e).__name__, "tier": tier},
                "response": {"llm_fallback": True, "error": f"{type(e).__name__}: {e}"[:500]}, "usd": 0.0,
@@ -521,7 +523,9 @@ class OrgPolicy:
             log.exception("could not log fallback")
 
     def _parallel(self, fn, items: list) -> list:
-        if len(items) <= 1:
+        # After the first 429 in a run, positions go one at a time for the rest of the run: the request
+        # cap is shared across every process on the key, and a fallback position is worse than a slow one.
+        if len(items) <= 1 or getattr(self, "_serial", False):
             return [fn(x) for x in items]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             return list(ex.map(fn, items))
