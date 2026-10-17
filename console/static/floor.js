@@ -294,24 +294,18 @@ export class Floor {
     ctx.setLineDash([]);
     // zone labels, drawn after the conveyor so nothing covers them: "Z6" left, load % right.
     // Measured against the cell; the zone id is dropped first, then the whole label, when too narrow.
-    ctx.font = "700 9.5px JetBrains Mono, monospace";
-    const wPct = ctx.measureText("100%").width, wId = ctx.measureText("Z6").width;
-    const inner = wd - 12;
-    const mode = inner >= wId + wPct + 10 ? "both" : inner >= wPct + 4 ? "pct" : "none";
-    if (mode !== "none") {
+    // zone load as "% of capacity", 11px, drawn after the conveyor, dropped only if the cell is too narrow
+    ctx.font = "700 11px JetBrains Mono, monospace";
+    if (wd - 8 >= ctx.measureText("100%").width) {
       for (let z = 0; z < N_ZONES; z++) {
         const zi = N_ZONES - 1 - z;
         const zy = pm.y + 5 + z * zh;
         const load = this.arr("pm_zones", zi, now);
-        const ty = zy + Math.min(12, zh / 2 + 3.5);
+        const ty = zy + Math.min(13, zh / 2 + 4);
         ctx.lineWidth = 3; ctx.strokeStyle = pal.floor; ctx.lineJoin = "round";
-        if (mode === "both") {
-          ctx.textAlign = "left"; ctx.strokeText(`Z${zi + 1}`, x + 6, ty);
-          ctx.fillStyle = pal.ink; ctx.fillText(`Z${zi + 1}`, x + 6, ty);
-        }
         const pct = `${Math.round(load * 100)}%`;
-        ctx.textAlign = "right"; ctx.strokeText(pct, x + wd - 6, ty);
-        ctx.fillStyle = load > 1 ? pal.hot : pal.ink; ctx.fillText(pct, x + wd - 6, ty);
+        ctx.textAlign = "right"; ctx.strokeText(pct, x + wd - 5, ty);
+        ctx.fillStyle = load > 1 ? pal.hot : pal.ink; ctx.fillText(pct, x + wd - 5, ty);
       }
     }
     // totes riding down
@@ -400,7 +394,7 @@ export class Floor {
     const cur = this.cur;
     panel(ctx, n, pal);
     const isNight = cur.phase === "night";
-    label(ctx, isNight ? "NIGHT · SLOT MOVES" : "STOCK · REPLENISHMENT", n.x + 8, n.y + 13, pal.muted);
+    label(ctx, isNight ? "SLOT MOVES TONIGHT" : "STOCK · REPLENISHMENT", n.x + 8, n.y + 13, pal.muted);
     ctx.textAlign = "left";
     if (isNight) {
       const done = (cur.moves && cur.moves.done) || 0;
@@ -408,7 +402,7 @@ export class Floor {
       ctx.fillStyle = pal.move; ctx.font = "700 20px Bricolage Grotesque, Schibsted Grotesk, system-ui";
       ctx.fillText(`${done}`, n.x + 8, n.y + 40);
       ctx.fillStyle = pal.muted; ctx.font = "500 11px Schibsted Grotesk, system-ui";
-      ctx.fillText(`SKUs moved this hour · ${movers} movers`, n.x + 8, n.y + 55);
+      ctx.fillText(`slot moves this hour · ${movers} movers`, n.x + 8, n.y + 55);
     } else {
       const so = Math.round(this.val("stockouts", now));
       const mp = Math.round(this.val("mispicks", now));
@@ -421,7 +415,7 @@ export class Floor {
         ctx.fillText(txt, n.x + 8 + wv + 6, y);
       };
       line(so, "lines waiting for stock", n.y + 36, so > 20);
-      line(mp, "wrong picks this hour", n.y + 58, mp > 12);
+      line(mp, "mis-picks this hour", n.y + 58, mp > 12);
     }
   }
 
@@ -523,27 +517,24 @@ export class Floor {
   drawCaption(now) {
     const { ctx, pal, w } = this;
     const cur = this.cur;
-    const phase = cur.phase === "day" ? "DAY SHIFT" : cur.phase === "swing" ? "SWING SHIFT" : "NIGHT · RESLOT";
+    const phase = cur.phase === "day" ? "DAY SHIFT" : cur.phase === "swing" ? "SWING SHIFT" : "NIGHT · SLOT MOVES";
     ctx.textAlign = "left";
     ctx.fillStyle = cur.phase === "night" ? pal.move : pal.muted;
     ctx.font = "700 11px Schibsted Grotesk, system-ui";
     const pools = cur.pools || {};
     const build = (names) => {
       const parts = [];
-      for (const [k, lbl] of names) { const p = pools[k]; if (p && p.available) parts.push(`${lbl} ${p.busy}/${p.available}`); }
+      for (const [k, lbl] of names) { const p = pools[k]; if (p && p.available) parts.push(`${lbl} ${p.busy} of ${p.available} busy`); }
       return parts.join("  ·  ");
     };
-    const long = build([["pm", "Pick Module pickers"], ["forklift", "forklift pickers"], ["consolidation", "consolidator"], ["loading", "loaders"], ["night_move", "movers"], ["temp", "temps"]]);
-    const short = build([["pm", "Pick Module"], ["forklift", "forklifts"], ["consolidation", "consolidator"], ["loading", "loaders"], ["night_move", "movers"], ["temp", "temps"]]);
-    // right-hand pool counts must never run into the phase label: shorten, then drop the hint
+    const long = build([["pm", "Pick Module pickers"], ["forklift", "forklifts"], ["consolidation", "consolidator"], ["loading", "loaders"], ["night_move", "movers"], ["temp", "temps"]]);
+    const short = build([["pm", "Pick Module"], ["forklift", "forklifts"], ["consolidation", "consolidator"], ["night_move", "movers"], ["temp", "temps"]]);
     ctx.font = "500 11px JetBrains Mono, monospace";
-    const poolsW = ctx.measureText(long).width, shortW = ctx.measureText(short).width;
+    const poolsW = ctx.measureText(long).width;
     ctx.font = "700 11px Schibsted Grotesk, system-ui";
-    const hint = " (busy / on shift →)";
-    const phaseW = ctx.measureText(phase + hint).width;
-    let poolsTxt = long, phaseTxt = phase + hint;
-    if (phaseW + poolsW + 40 > w) { poolsTxt = short; if (phaseW + shortW + 40 > w) phaseTxt = phase; }
-    ctx.fillText(phaseTxt, 12, 15);
+    const phaseW = ctx.measureText(phase).width;
+    const poolsTxt = phaseW + poolsW + 40 > w ? short : long;
+    ctx.fillText(phase, 12, 15);
     ctx.textAlign = "right"; ctx.fillStyle = pal.muted; ctx.font = "500 11px JetBrains Mono, monospace";
     ctx.fillText(poolsTxt, w - 12, 15);
   }

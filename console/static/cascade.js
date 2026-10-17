@@ -38,7 +38,7 @@ export class Cascade {
       colOf.set(n.id, col);
     }
     const nCols = col + 1;
-    const NW = 168, NH = 46, GX = 40, GY = 14, PADX = 16, PADY = 14;
+    const NW = 214, NH = 46, GX = 36, GY = 14, PADX = 16, PADY = 14;
     const lanesUsed = LANES.filter((l) => sorted.some((n) => n.type === l));
     const laneIdx = new Map(lanesUsed.map((l, i) => [l, i]));
     const W = PADX * 2 + nCols * (NW + GX) - GX + 92;
@@ -76,8 +76,8 @@ export class Cascade {
       const g = el("g", { class: `cnode t-${n.type} ${n.id === data.root ? "is-root" : ""}`, transform: `translate(${p.x},${p.y})` });
       g.appendChild(el("rect", { width: NW, height: NH, rx: 8 }));
       g.appendChild(el("circle", { class: "cn-mark", cx: 13, cy: NH / 2, r: 4.5 }));
-      const l = el("text", { class: "cn-l", x: 24, y: 18 }); l.textContent = trunc(n.label, 22); g.appendChild(l);
-      const d = el("text", { class: "cn-d", x: 24, y: 33 }); d.textContent = trunc(n.phrase || n.detail || "", 27); g.appendChild(d);
+      const l = el("text", { class: "cn-l", x: 24, y: 18 }); l.textContent = trunc(n.label, 30); g.appendChild(l);
+      const d = el("text", { class: "cn-d", x: 24, y: 33 }); d.textContent = trunc(n.phrase || n.detail || "", 36); g.appendChild(d);
       const title = el("title", {}); title.textContent = `${n.label}\n${n.detail || ""}${n.rationale ? "\n" + n.rationale : ""}\nclick: centre · double-click: jump to day ${n.day ?? ""}`;
       g.appendChild(title);
       g.addEventListener("click", () => this.onPick && this.onPick(n.id, n.label));

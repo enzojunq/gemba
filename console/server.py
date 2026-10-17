@@ -92,10 +92,109 @@ def _run_or_404(run_id: str) -> dict:
 
 # --------------------------------------------------------------------------- labels
 
-ROLE_SHORT = {
-    "Megan": "program manager", "Ryan": "ops manager", "Luke": "reslotting engineer", "Paige": "analytics",
-    "Dana": "plant director", "Sam": "safety", "Ellen": "quality", "Marcus": "shift lead", "Tom": "replenishment",
+# Roles: B's org/roles/*.yaml is the single source for id -> name/title; a fallback keeps the console
+# working without the org package. `utterances.role`, attendees, hires and decided_by carry ROLE IDS.
+_FALLBACK_ROLES = {
+    "program_manager": ("Megan", "Program Manager", "core"), "ops_manager": ("Ryan", "Ops Manager", "core"),
+    "reslotting_engineer": ("Luke", "Reslotting Engineer", "core"), "analytics": ("Paige", "Analytics", "core"),
+    "plant_director": ("Dana", "Plant Director", "director"), "safety": ("Sam", "Safety Lead", "oncall"),
+    "quality": ("Ellen", "Quality Lead", "oncall"), "shift_lead": ("Marcus", "Shift Lead", "oncall"),
+    "replenishment": ("Tom", "Replenishment Lead", "oncall"),
 }
+_ROLE_ALIASES = {"reslot_engineer": "reslotting_engineer", "director": "plant_director"}
+_roles_cache: dict | None = None
+
+
+def roles() -> dict[str, dict]:
+    """id -> {id, name, title, kind} with kind in core | oncall | director."""
+    global _roles_cache
+    if _roles_cache is not None:
+        return _roles_cache
+    out: dict[str, dict] = {}
+    try:
+        from org.roles import load_roles  # B's package; optional for the console
+        for rid, r in load_roles().items():
+            kind = "director" if getattr(r, "power", "") == "director" else (
+                "core" if getattr(r, "attends", "") == "always" else "oncall")
+            out[rid] = {"id": rid, "name": r.name, "title": r.title, "kind": kind}
+    except Exception:
+        pass
+    for rid, (name, title, kind) in _FALLBACK_ROLES.items():
+        out.setdefault(rid, {"id": rid, "name": name, "title": title, "kind": kind})
+    _roles_cache = out
+    return out
+
+
+def role_of(x: str | None) -> dict:
+    """Resolve a role id, an alias, or a first name (older fixtures) to the role record."""
+    rs = roles()
+    if not x:
+        return {"id": "", "name": "", "title": "", "kind": "oncall"}
+    key = _ROLE_ALIASES.get(x, x)
+    if key in rs:
+        return rs[key]
+    for r in rs.values():
+        if r["name"].lower() == str(x).lower():
+            return r
+    pretty = str(x).replace("_", " ")
+    return {"id": x, "name": pretty.title(), "title": pretty, "kind": "oncall"}
+
+
+def role_name(x: str | None) -> str:
+    return role_of(x)["name"] if x else ""
+
+
+SCENARIO_TITLES = {"reslot_default": "Reslot of 28 aisles"}
+
+
+def scenario_title(sid: str | None) -> str:
+    if not sid:
+        return "—"
+    return SCENARIO_TITLES.get(sid, sid.replace("_", " ").capitalize())
+
+
+VIOLATION_LABEL = {
+    "pm_peak_zone_load": "Pick Module zone over its 110% limit", "safety_risk_max": "safety risk over the limit",
+    "expected_near_misses": "expected near-misses over the limit", "on_time_pct": "on-time below target",
+    "mispick_rate": "mis-picks above target",
+}
+
+
+def violation_label(v: str) -> str:
+    for k, lab in VIOLATION_LABEL.items():
+        if v.startswith(k):
+            return lab
+    return v.replace("_", " ")
+
+
+def humanize_trigger(t: str | None) -> str:
+    if not t:
+        return ""
+    t = t.strip()
+    if t == "chair_escalates":
+        return "the chair escalated"
+    if t.startswith("chair:"):
+        return "called in by the chair for " + EVENT_LABEL.get(t.split(":", 1)[1].strip(), t.split(":", 1)[1].strip().replace("_", " ")).lower()
+    if t in EVENT_LABEL:
+        return EVENT_LABEL[t].lower()
+    return t.replace("_", " ")
+
+
+def humanize_rationale(r: str | None) -> str:
+    r = (r or "").strip()
+    if r.startswith("(fallback)"):
+        rest = r[len("(fallback)"):].strip(" :.")
+        return "Chair's default choice" + (f": {rest}" if rest and rest != "the chair's choice stands" else "")
+    return r
+
+
+def option_letters(opts: list[dict]) -> dict[str, str]:
+    """A, B, C… by order within the meeting (ids end in -A/-B or -o1/-o2)."""
+    def key(o):
+        tail = o["option_id"].rsplit("-", 1)[-1]
+        digits = "".join(ch for ch in tail if ch.isdigit())
+        return (0, int(digits)) if digits else (1, tail)
+    return {o["option_id"]: chr(65 + i) for i, o in enumerate(sorted(opts, key=key))}
 
 EVENT_LABEL = {
     "labor_shortage": "Labor shortage", "demand_surge": "Demand surge", "rack_damage": "Rack damage",
@@ -242,7 +341,8 @@ def event_label(e: dict) -> str:
 def _run_header(run: dict) -> dict:
     days = [d["day"] for d in store().day_results(run["run_id"])]
     return {
-        "run_id": run["run_id"], "scenario": run["scenario_id"], "profile": run["profile_id"],
+        "run_id": run["run_id"], "scenario": run["scenario_id"], "scenario_title": scenario_title(run["scenario_id"]),
+        "profile": run["profile_id"],
         "playbook": run["playbook_version"], "status": run["status"], "mode": run["mode"], "seed": run["seed"],
         "parent_run_id": run["parent_run_id"], "fork_day": run["fork_day"], "fork_decision": run["fork_decision"],
         "started_at": run["started_at"], "finished_at": run["finished_at"], "llm_usd": run["llm_usd"],
@@ -259,14 +359,23 @@ def _meeting_bundle(run_id: str, day: int) -> dict | None:
     mid = m["meeting_id"]
     utts = sorted(_q("utterances", run_id=run_id, meeting_id=mid), key=lambda u: u["seq"])
     opts = _q("options", run_id=run_id, meeting_id=mid)
+    letters = option_letters(opts)
     for o in opts:
-        o["label"] = o["option_id"].rsplit("-", 1)[-1]
+        o["label"] = letters[o["option_id"]]
         o["lever_labels"] = [lever_label(lv) for lv in (o["levers"] or [])]
         o["effect"] = effects(o["levers"])
+        o["proposed_by_id"] = o["proposed_by"]
+        o["proposed_by"] = role_name(o["proposed_by"])
+        o["vetoed_by_id"] = o["vetoed_by"]
+        o["vetoed_by"] = role_name(o["vetoed_by"]) if o["vetoed_by"] else None
+        o["locks"] = any((lv or {}).get("kind") == "protect" for lv in (o["levers"] or []))
     for u in utts:
-        u["title"] = ROLE_SHORT.get(u["role"], "")
-        u["option_label"] = u["option_id"].rsplit("-", 1)[-1] if u.get("option_id") else None
-    return {**m, "utterances": utts, "options": sorted(opts, key=lambda o: -(o["score"] or 0))}
+        r = role_of(u["role"])
+        u["role_id"], u["role"], u["title"] = r["id"], r["name"], r["title"]
+        u["option_label"] = letters.get(u["option_id"]) if u.get("option_id") else None
+    ids = [role_of(a)["id"] for a in (m["attendees"] or [])]
+    return {**m, "attendee_ids": ids, "attendees": [role_name(a) for a in ids], "utterances": utts,
+            "option_letters": letters, "options": sorted(opts, key=lambda o: -(o["score"] or 0))}
 
 
 def _day_bundle(run_id: str, day: int, with_hourly: bool = True) -> dict:
@@ -279,19 +388,27 @@ def _day_bundle(run_id: str, day: int, with_hourly: bool = True) -> dict:
     if dec:
         dec["lever_labels"] = [lever_label(lv) for lv in (dec["levers"] or [])]
         dec["effect"] = effects(dec["levers"])
+        dec["decided_by_id"] = dec["decided_by"]
+        dec["decided_by"] = role_name(dec["decided_by"])
+        dec["rationale"] = humanize_rationale(dec["rationale"])
     events = [dict(e, label=event_label(e), plain=event_plain(e)) for e in store().events(run_id) if e["day"] == day]
-    hires = [h for h in _q("hires", run_id=run_id) if h["day"] == day or h.get("released_day") == day]
-    active_hires = [h["role"] for h in _q("hires", run_id=run_id)
-                    if h["day"] <= day and (h["released_day"] is None or h["released_day"] > day)]
+    all_hires = [dict(h, role_id=role_of(h["role"])["id"], role=role_name(h["role"]), trigger_label=humanize_trigger(h["trigger"]))
+                 for h in _q("hires", run_id=run_id)]
+    hires = [h for h in all_hires if h["day"] == day or h.get("released_day") == day]
+    active = [h for h in all_hires if h["day"] <= day and (h["released_day"] is None or h["released_day"] > day)]
+    active_hires = [h["role"] for h in active]
+    active_hire_ids = [h["role_id"] for h in active]
     checks = [k for k in _q("checks", run_id=run_id) if k["day"] == day]
     drift = [f for f in _q("drift_flags", run_id=run_id) if f["day"] == day]
-    cons = [dict(k, label=event_label(k)) for k in _q("constraints", run_id=run_id)
+    cons = [dict(k, label=event_label(k), owner=role_name(k["owner_role"])) for k in _q("constraints", run_id=run_id)
             if k["day_start"] <= day <= (k["day_end"] or k["day_start"])]
     return {
         "run_id": run_id, "day": day, "kpis": dr["kpis"], "predicted": dr["predicted"],
-        "violations": dr["violations"] or [], "hourly": dr["hourly"] if with_hourly else None,
+        "violations": dr["violations"] or [], "violation_labels": [violation_label(v) for v in (dr["violations"] or [])],
+        "hourly": dr["hourly"] if with_hourly else None,
         "events": events, "meeting": _meeting_bundle(run_id, day), "decision": dec, "hires": hires,
-        "active_hires": active_hires, "checks": checks, "drift": drift, "constraints": cons,
+        "active_hires": active_hires, "active_hire_ids": active_hire_ids, "checks": checks, "drift": drift,
+        "constraints": cons, "roles": roles(),
     }
 
 
@@ -324,8 +441,10 @@ def get_run(run_id: str) -> dict:
             thresholds["reslot_progress_pct"] = k["threshold"]
     hdr["thresholds"] = thresholds
     hdr["events"] = [dict(e, label=event_label(e), plain=event_plain(e)) for e in store().events(run_id)]
-    hdr["hires"] = _q("hires", run_id=run_id)
-    hdr["constraints"] = [dict(k, label=event_label(k)) for k in _q("constraints", run_id=run_id)]
+    hdr["hires"] = [dict(h, role_id=role_of(h["role"])["id"], role=role_name(h["role"]), trigger_label=humanize_trigger(h["trigger"]))
+                    for h in _q("hires", run_id=run_id)]
+    hdr["constraints"] = [dict(k, label=event_label(k), owner=role_name(k["owner_role"])) for k in _q("constraints", run_id=run_id)]
+    hdr["roles"] = roles()
     hdr["agreements"] = _q("agreements", run_id=run_id)
     hdr["evidence"] = [{k: v for k, v in e.items() if k != "spec"} for e in _q("evidence", run_id=run_id)]
     hdr["drift"] = _q("drift_flags", run_id=run_id)
@@ -337,6 +456,7 @@ def get_run(run_id: str) -> dict:
         "decision_id": decs.get(d["day"], {}).get("decision_id"),
         "decision_label": "; ".join(lever_label(lv) for lv in (decs.get(d["day"], {}).get("levers") or [])),
         "decision_effect": effects(decs.get(d["day"], {}).get("levers")),
+        "violation_labels": [violation_label(v) for v in (d["violations"] or [])],
         "deviates": decs.get(d["day"], {}).get("deviates_from_top_score"),
         "checks_failed": [k["check_name"] for k in checks if k["day"] == d["day"] and not k["passed"]],
     } for d in days]

@@ -3,10 +3,10 @@
 
 const NS = "http://www.w3.org/2000/svg";
 const SPARKS = [
-  { k: "on_time_pct", label: "on-time", unit: "% orders on time", fmt: (v) => v.toFixed(1) + "%", thr: "on_time_pct", range: [90, 100] },
-  { k: "mispick_rate", label: "mis-pick", unit: "% lines wrong", fmt: (v) => v.toFixed(2) + "%", thr: "mispick_rate", range: [0, 1.2] },
-  { k: "lph", label: "LPH", unit: "lines / labor hour", fmt: (v) => v.toFixed(0), thr: null, range: null },
-  { k: "reslot_progress_pct", label: "reslot", unit: "% of moves done", fmt: (v) => v.toFixed(0) + "%", thr: "reslot_progress_pct", range: [0, 100] },
+  { k: "on_time_pct", label: "on-time", unit: "% of orders on time", fmt: (v) => v.toFixed(1) + "%", thr: "on_time_pct", range: [90, 100] },
+  { k: "mispick_rate", label: "mis-picks", unit: "% of lines picked wrong", fmt: (v) => v.toFixed(2) + "%", thr: "mispick_rate", range: [0, 1.2] },
+  { k: "lph", label: "lines/hour", unit: "lines per labor hour", fmt: (v) => v.toFixed(0), thr: null, range: null },
+  { k: "reslot_progress_pct", label: "slot moves", unit: "% of slot moves done", fmt: (v) => v.toFixed(0) + "%", thr: "reslot_progress_pct", range: [0, 100] },
 ];
 
 export class Timeline {
@@ -35,8 +35,8 @@ export class Timeline {
 
   geometry() {
     const r = this.el.getBoundingClientRect();
-    const W = Math.max(200, r.width), H = Math.max(100, r.height);
-    const left = this.compact ? 74 : 118, right = this.compact ? 80 : 90, top = 8;
+    const left = this.compact ? 112 : 156, right = this.compact ? 80 : 90, top = 8;
+    const W = Math.max(left + right + 30 * 4, r.width), H = Math.max(100, r.height);
     const days = this.run && this.run.days.length ? this.run.days.map((d) => d.day) : [];
     const d0 = this.run && this.run.first_day != null ? Math.min(61, this.run.first_day) : 61;
     const d1 = this.run && this.run.last_day != null ? Math.max(90, this.run.last_day) : 90;
@@ -47,6 +47,7 @@ export class Timeline {
   }
 
   render() {
+    if (this.el.getBoundingClientRect().width < 10) return;  // not laid out yet; the ResizeObserver re-renders
     const g = this.geometry();
     const { W, H, left, top, d0, d1, colW, x } = g;
     const svg = this.svg;
@@ -108,9 +109,9 @@ export class Timeline {
         const tl = el("text", { class: "tl-thr-l", x: W - g.right + 3, y: yv(thr) + 3 }); tl.textContent = `target ${sp.k === "mispick_rate" ? "≤" : "≥"} ${thr}`;
         svg.appendChild(tl);
       }
-      const lab = el("text", { class: "tl-lane", x: 8, y: y0 + 10 }); lab.textContent = sp.label; svg.appendChild(lab);
-      if (!this.compact && laneH >= 30) { const u = el("text", { class: "tl-unit", x: 8, y: y0 + laneH - 8 }); u.textContent = sp.unit; svg.appendChild(u); }
-      const val = el("text", { class: "tl-val", x: left - 8, y: y0 + 11, "data-val": sp.k, style: this.compact ? "display:none" : "" }); svg.appendChild(val);
+      const lab = el("text", { class: "tl-lane", x: 8, y: y0 + laneH / 2 + 4 }); lab.textContent = sp.label; svg.appendChild(lab);
+      const tt = el("title", {}); tt.textContent = sp.unit; lab.appendChild(tt);
+      const val = el("text", { class: "tl-val", x: left - 8, y: y0 + laneH / 2 + 4, "data-val": sp.k, style: this.compact ? "display:none" : "" }); svg.appendChild(val);
       // failed checks tick under the lane
       for (const d of run.days) {
         if ((d.checks_failed || []).some((c) => c.endsWith("." + sp.k))) {

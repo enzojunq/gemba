@@ -2,11 +2,11 @@
 import { Timeline } from "./timeline.js";
 
 const TOTAL_LABEL = {
-  on_time_pct: ["on-time (mean)", "%", 1, +1], mispick_rate: ["mis-pick (mean)", "%", 2, -1], lph: ["LPH (mean)", "", 1, +1],
-  reslot_progress_pct: ["reslot progress (final)", "%", 0, +1], labor_cost_usd: ["labor cost (sum)", "$", 0, -1],
+  on_time_pct: ["on-time (mean)", "%", 1, +1], mispick_rate: ["mis-picks (mean)", "%", 2, -1], lph: ["lines per labor hour (mean)", "", 1, +1],
+  reslot_progress_pct: ["slot moves done (final)", "%", 0, +1], labor_cost_usd: ["labor cost (sum)", "$", 0, -1],
   near_misses: ["near-misses (sum)", "", 0, -1], jam_hours: ["jam hours (sum)", "", 0, -1],
 };
-const DAY_KPIS = [["on_time_pct", "on-time", " pts", 1], ["mispick_rate", "mis-picks", " pts", 2], ["lph", "lines/labor h", "", 1], ["reslot_progress_pct", "reslot progress", "%", 1], ["staging_occupancy_max", "staging", " pts", 0], ["moves_done", "slot moves", "", 0]];
+const DAY_KPIS = [["on_time_pct", "on-time", " pts", 1], ["mispick_rate", "mis-picks", " pts", 2], ["lph", "lines/hour", "", 1], ["reslot_progress_pct", "slot moves done", "%", 1], ["staging_occupancy_max", "staging", " pts", 0], ["moves_done", "slot moves tonight", "", 0]];
 
 export class Compare {
   constructor(el, { onCascade } = {}) { this.el = el; this.onCascade = onCascade; }
@@ -95,7 +95,7 @@ Compare.prototype.verdict = function (cmp, ra, rb, fd) {
     (v * good > 0 ? gains : costs).push(span(v, good, txt));
   };
   push("on_time_pct", +1, 1, "on-time", " pts"); push("mispick_rate", -1, 2, "mis-picks", " pts");
-  push("reslot_progress_pct", +1, 0, "reslot progress", "%"); push("lph", +1, 1, "lines per labor hour", "");
+  push("reslot_progress_pct", +1, 0, "slot moves done", "%"); push("lph", +1, 1, "lines per labor hour", "");
   if (t.labor_cost_usd && t.labor_cost_usd.delta) { const v = t.labor_cost_usd.delta; (v < 0 ? gains : costs).push(span(v, -1, `${v > 0 ? "+" : "−"}$${Math.abs(Math.round(v / 1000))}k labor`)); }
   push("near_misses", -1, 0, "near-misses", "");
   if (!gains.length && !costs.length) return `${esc(what)} made no measurable difference against run A.`;

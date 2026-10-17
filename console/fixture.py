@@ -24,9 +24,11 @@ FORK_RUN = "fk-pm000069"
 DAYS = range(61, 91)
 HOURS = list(range(6, 24)) + list(range(0, 6))  # the day runs 06..23 then 00..05
 
+# fixture keys -> role ids as B's org writes them (utterances.role, attendees, hires.role, decided_by)
 ROLES = {
-    "program_manager": "Megan", "ops_manager": "Ryan", "reslot_engineer": "Luke", "analytics": "Paige",
-    "director": "Dana", "safety": "Sam", "quality": "Ellen", "shift_lead": "Marcus", "replenishment": "Tom",
+    "program_manager": "program_manager", "ops_manager": "ops_manager", "reslot_engineer": "reslotting_engineer",
+    "analytics": "analytics", "director": "plant_director", "safety": "safety", "quality": "quality",
+    "shift_lead": "shift_lead", "replenishment": "replenishment",
 }
 CORE = ["program_manager", "ops_manager", "reslot_engineer", "analytics"]
 

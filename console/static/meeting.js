@@ -1,302 +1,329 @@
-// Meeting room: avatars around a table, streamed speech bubbles, options and the decision.
+// Meeting room. Primary path: who is speaking and what they said → what was decided.
+// Vertical budget (top → bottom): pane head (kind + agenda) · "What just happened" · decision
+// banner once the meeting has closed (the room's title) · seats (thin band) · TRANSCRIPT (flex 1,
+// the tallest region, follows the newest utterance) · dock with the options row.
+// Roles are keyed by ROLE ID (B's org); names and titles come from the server's roles map.
 
-const ROSTER = [
-  // name, title, kind (core | oncall | director), seat angle (deg, 0 = top, clockwise)
-  { name: "Megan", title: "chair · program", kind: "core", chair: true },
-  { name: "Ryan", title: "operations", kind: "core" },
-  { name: "Luke", title: "reslot engineer", kind: "core" },
-  { name: "Paige", title: "analytics", kind: "core" },
-  { name: "Dana", title: "director", kind: "director" },
-  { name: "Sam", title: "safety", kind: "oncall" },
-  { name: "Ellen", title: "quality", kind: "oncall" },
-  { name: "Marcus", title: "shift lead", kind: "oncall" },
-  { name: "Tom", title: "replenishment", kind: "oncall" },
-];
-// seat layout: two tidy rows. Row 1 = chair centred with the always-attending roles beside her
-// (Dana at the end, lit only on escalations); row 2 = on-call roles. Normalized x; row index.
-const SEATS = {
-  Ryan: [0.12, 0], Luke: [0.31, 0], Megan: [0.5, 0], Paige: [0.69, 0], Dana: [0.88, 0],
-  Sam: [0.27, 1], Ellen: [0.42, 1], Marcus: [0.58, 1], Tom: [0.75, 1],
-};
-// seat centre y in px for a seat area of height H (two rows, name + title under each ring)
-const seatY = (row, H) => (row === 0 ? 20 : Math.max(84, H - 44));
+const CORE_ORDER = ["ops_manager", "reslotting_engineer", "program_manager", "analytics", "plant_director"];
+const ONCALL_ORDER = ["safety", "quality", "shift_lead", "replenishment"];
 const KIND_ICON = { veto: "#i-veto", lock: "#i-lock", decision: "#i-check", proposal: "#i-bolt" };
+const KIND_WORD = { veto: "VETO", lock: "LOCK", proposal: "PROPOSAL", position: "POSITION", question: "QUESTION", decision: "DECISION" };
 
 export class Room {
   constructor(el, subEl) {
     this.el = el;
     this.sub = subEl;
+    this.roles = {};
     this.hired = new Set();
     this.inRoom = new Set();
     this.day = null;
+    this.story = [];
+    this.notable = [];
+    this.lastSpeaker = null;
+    this.seatEls = {};
     this.build();
   }
 
   build() {
     this.el.innerHTML = `
       <div class="narr" id="narr"><span class="narr-k">What just happened</span><span class="narr-t" id="narr-t">Waiting for the first day…</span></div>
-      <div class="mtg-head" id="mtg-head"><span class="mtg-kind" id="mtg-kind">—</span><span class="mtg-agenda" id="mtg-agenda"></span></div>
+      <div class="room-title" id="room-title" hidden></div>
       <div class="room-table" id="room-table"></div>
-      <div class="bubble-row" id="bubble-row" aria-live="polite"></div>
-      <div class="transcript" id="transcript"></div>
-      <div class="room-foot" id="room-foot"></div>`;
-    this.tableEl = this.el.querySelector("#room-table");
-    this.bubbleRow = this.el.querySelector("#bubble-row");
-    this.kindEl = this.el.querySelector("#mtg-kind");
-    this.agendaEl = this.el.querySelector("#mtg-agenda");
-    this.transcript = this.el.querySelector("#transcript");
-    this.foot = this.el.querySelector("#room-foot");
+      <div class="transcript" id="transcript" aria-live="polite"></div>
+      <div class="room-dock" id="room-dock" hidden></div>`;
     this.narrEl = this.el.querySelector("#narr-t");
-    this.story = [];
-    this.notable = [];
-    this.drawTable();
+    this.titleEl = this.el.querySelector("#room-title");
+    this.tableEl = this.el.querySelector("#room-table");
+    this.transcript = this.el.querySelector("#transcript");
+    this.dock = this.el.querySelector("#room-dock");
+    this.ro = new ResizeObserver(() => this.placeSeats());
+    this.ro.observe(this.tableEl);
   }
 
-  drawTable() {
-    // seats live in an SVG sized to the area (viewBox = px) so circles stay round
-    const seats = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    const oncall = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    oncall.setAttribute("class", "seat-rowlabel"); oncall.textContent = "on call";
-    seats.appendChild(oncall);
-    this.oncallLabel = oncall;
-    seats.setAttribute("class", "seats-svg");
-    seats.style.cssText = "position:absolute;inset:0;width:100%;height:100%;overflow:visible";
+  // ------------------------------------------------------------------ roles + seats
+  setRoles(roles) {
+    if (!roles || !Object.keys(roles).length) return;
+    const same = JSON.stringify(Object.keys(roles).sort()) === JSON.stringify(Object.keys(this.roles).sort());
+    this.roles = roles;
+    if (!same || !Object.keys(this.seatEls).length) this.drawSeats();
+  }
+
+  roster() {
+    const ids = Object.keys(this.roles);
+    const core = CORE_ORDER.filter((id) => ids.includes(id)).concat(ids.filter((id) => !CORE_ORDER.includes(id) && !ONCALL_ORDER.includes(id) && this.roles[id].kind !== "oncall"));
+    const oncall = ONCALL_ORDER.filter((id) => ids.includes(id)).concat(ids.filter((id) => !CORE_ORDER.includes(id) && !ONCALL_ORDER.includes(id) && this.roles[id].kind === "oncall"));
+    return { core, oncall };
+  }
+
+  drawSeats() {
+    const NS = "http://www.w3.org/2000/svg";
+    this.tableEl.innerHTML = "";
+    const svg = document.createElementNS(NS, "svg");
+    svg.style.cssText = "position:absolute;inset:0;width:100%;height:100%;overflow:visible";
+    const label = document.createElementNS(NS, "text");
+    label.setAttribute("class", "seat-rowlabel"); label.textContent = "on call";
+    svg.appendChild(label);
+    this.oncallLabel = label;
     this.seatEls = {};
-    for (const r of ROSTER) {
-      const [nx, ny] = SEATS[r.name];
-      const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const { core, oncall } = this.roster();
+    for (const id of [...core, ...oncall]) {
+      const r = this.roles[id];
+      const g = document.createElementNS(NS, "g");
       g.setAttribute("class", `seat is-away k-${r.kind}`);
-      g.dataset.name = r.name;
+      g.dataset.id = id;
+      const ini = r.name.slice(0, 2);
       g.innerHTML = `
+        <title>${r.name} · ${r.title}</title>
         <g class="seat-pos">
           <circle class="seat-glow" r="18"/>
           <circle class="seat-ring" r="17"/>
-          <text class="seat-ini">${r.name.slice(0, 2)}</text>
-          <g class="seat-badge-g" transform="translate(11,-13)" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" x="-7" y="-7"><use href="#i-badge" class="${r.kind === "core" ? "seat-badge-core" : "seat-badge"}"/></svg></g>
-          <g class="seat-veto" transform="translate(0,-2) rotate(-12)"><rect x="-26" y="-9" width="52" height="18" rx="3" fill="none" stroke="var(--red)" stroke-width="2.5"/><text x="0" y="5" text-anchor="middle" font-family="var(--font-display)" font-weight="700" font-size="12" fill="var(--red)" letter-spacing="2">VETO</text></g>
-          <g class="seat-lock" transform="translate(13,10)"><circle r="9" fill="var(--teal)"/><svg width="12" height="12" viewBox="0 0 24 24" x="-6" y="-6"><use href="#i-lock" style="color:var(--bg)"/></svg></g>
+          <text class="seat-ini">${ini}</text>
+          <g class="seat-badge-g" transform="translate(12,-12)" style="display:none"><title>called in for this meeting</title><svg width="14" height="14" viewBox="0 0 24 24" x="-7" y="-7"><use href="#i-badge" class="seat-badge"/></svg></g>
           <text class="seat-name" y="30">${r.name}</text>
-          <text class="seat-title" y="41">${r.title}</text>
+          <text class="seat-title" y="42">${r.title}</text>
+          <g class="seat-chip" style="display:none"><rect class="seat-chip-bg" rx="4"/><text class="seat-chip-t" y="0"></text></g>
         </g>`;
-      seats.appendChild(g);
-      this.seatEls[r.name] = g;
+      svg.appendChild(g);
+      this.seatEls[id] = g;
     }
-    this.tableEl.appendChild(seats);
-    this.seatsSvg = seats;
-    this.ro = new ResizeObserver(() => this.placeSeats());
-    this.ro.observe(this.tableEl);
-    // a transcript squeezed under two lines shows half a row and reads as a glitch: hide it instead
-    this.roT = new ResizeObserver(() => { const h = this.transcript.getBoundingClientRect().height; this.transcript.style.visibility = h < 38 ? "hidden" : ""; });
-    this.roT.observe(this.transcript);
+    this.tableEl.appendChild(svg);
     this.placeSeats();
   }
 
   placeSeats() {
+    if (!Object.keys(this.seatEls).length) return;
     const r = this.tableEl.getBoundingClientRect();
-    this.seatsSvg.setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
-    const compact = r.height < 126;  // laptop heights: tighter rows, name + title closer to the ring
-    for (const name in this.seatEls) {
-      const [nx, row] = SEATS[name];
-      const g = this.seatEls[name].querySelector(".seat-pos");
-      const y = compact ? (row === 0 ? 18 : r.height - 36) : seatY(row, r.height);
-      g.setAttribute("transform", `translate(${(nx * r.width).toFixed(1)},${y.toFixed(1)})`);
-      g.querySelector(".seat-name").setAttribute("y", compact ? 27 : 30);
-      g.querySelector(".seat-title").setAttribute("y", compact ? 37 : 41);
+    if (r.width < 10) return;
+    const { core, oncall } = this.roster();
+    // one row of smaller avatars on laptops (and narrow panes); two rows on a 1080p projector
+    const oneRow = r.width < 560 || window.innerHeight < 960;
+    this.tableEl.classList.toggle("is-one-row", oneRow);
+    const place = (ids, y, x0, x1) => ids.forEach((id, i) => {
+      const x = x0 + ((i + 0.5) / ids.length) * (x1 - x0);
+      this.seatEls[id].querySelector(".seat-pos").setAttribute("transform", `translate(${x.toFixed(1)},${y})`);
+    });
+    if (oneRow) {
+      place([...core, ...oncall], 20, 8, r.width - 8);
+      this.oncallLabel.style.display = "none";
+    } else {
+      place(core, 18, 0, r.width * 0.98);
+      place(oncall, Math.max(72, r.height - 38), r.width * 0.2, r.width * 0.86);
+      this.oncallLabel.style.display = "";
+      this.oncallLabel.setAttribute("x", (r.width * 0.2 - 10).toFixed(1));
+      this.oncallLabel.setAttribute("y", (Math.max(72, r.height - 38) + 4).toFixed(1));
     }
-    this.oncallLabel.setAttribute("x", (0.27 * r.width - 40).toFixed(1));
-    this.oncallLabel.setAttribute("y", ((compact ? r.height - 36 : seatY(1, r.height)) + 4).toFixed(1));
   }
 
-  setHead(kind, agenda) {
-    this.kindEl.textContent = kind;
-    this.agendaEl.textContent = agenda || "";
+  seat(id) { return this.seatEls[id]; }
+
+  setChip(id, text, cls) {
+    const g = this.seat(id); if (!g) return;
+    const chip = g.querySelector(".seat-chip");
+    if (!text) { chip.style.display = "none"; g.classList.remove("is-veto", "is-lock"); return; }
+    chip.style.display = "";
+    chip.setAttribute("class", `seat-chip ${cls}`);
+    const t = chip.querySelector(".seat-chip-t"); t.textContent = text;
+    const w = text.length * 7 + 10;
+    chip.setAttribute("transform", `translate(${(-w / 2).toFixed(1)},${this.tableEl.classList.contains("is-one-row") ? 44 : 47})`);
+    const bg = chip.querySelector(".seat-chip-bg"); bg.setAttribute("width", w); bg.setAttribute("height", 15); bg.setAttribute("y", -11);
+    t.setAttribute("x", w / 2);
+    g.classList.add(cls === "c-veto" ? "is-veto" : "is-lock");
   }
 
-  // ------------------------------------------------------------------ narration ("what just happened")
+  setActiveHires(ids) {
+    this.hired = new Set(ids || []);
+    for (const id in this.seatEls) {
+      const g = this.seatEls[id];
+      g.querySelector(".seat-badge-g").style.display = (this.roles[id].kind !== "core" && this.hired.has(id)) ? "" : "none";
+    }
+  }
+
+  resetSeats(present) {
+    for (const id in this.seatEls) {
+      const g = this.seatEls[id];
+      g.classList.toggle("is-away", !present.has(id));
+      g.classList.remove("is-speaking", "is-muted");
+      this.setChip(id, null);
+    }
+  }
+
+  // ------------------------------------------------------------------ narration
   narrate(clauses, reset = false) {
     if (reset) this.story = [];
     for (const c of clauses) if (c && !this.story.includes(c)) this.story.push(c);
-    const last = this.story.slice(-4);
+    const last = this.story.slice(window.innerWidth < 1300 ? -3 : -4);  // two full lines, no cut
     this.narrEl.innerHTML = last.map((c, i) => `${i ? '<span class="arrow">→</span>' : ""}${esc(cap(c))}`).join("");
-    this.narrEl.classList.remove("narr-t"); void this.narrEl.offsetWidth; this.narrEl.classList.add("narr-t");
   }
 
-  // ------------------------------------------------------------------ state
-  setActiveHires(names) {
-    this.hired = new Set(names || []);
-    for (const r of ROSTER) {
-      const g = this.seatEls[r.name];
-      g.querySelector(".seat-badge-g").style.display = (r.kind !== "core" && this.hired.has(r.name)) ? "" : "none";
-    }
+  // ------------------------------------------------------------------ states
+  setHead(kind, agenda) {
+    this.sub.innerHTML = `<b>${esc(kind)}</b>${agenda ? ` · ${esc(agenda)}` : ""}`;
   }
 
-  // Spec 10.5: a quiet day means code found no new events, consequences, drift or inbox, and KPIs
-  // inside their bands. The standing plan continues and the chair writes one line.
+  // Spec 10.5: no meeting; the standing plan continues and the chair writes one line.
   quietDay(bundle) {
     const day = bundle.day, decision = bundle.decision, m = bundle.meeting;
     this.day = day;
     this.inRoom = new Set();
-    this.clearBubble();
-    const present = new Set(["Megan", "Ryan", "Luke", "Paige", ...(this.hired.has("Dana") ? ["Dana"] : [])]);
-    for (const r of ROSTER) {
-      const g = this.seatEls[r.name];
-      g.classList.toggle("is-away", !present.has(r.name));
-      g.classList.toggle("is-muted", present.has(r.name));
-      g.classList.remove("is-speaking", "is-veto", "is-lock");
-    }
-    this.setHead("Quiet day", "standing plan continues, no agenda");
+    const core = this.roster().core.filter((id) => this.roles[id].kind === "core" || this.hired.has(id));
+    this.resetSeats(new Set(core));
+    for (const id of core) this.seat(id).classList.add("is-muted");
     const why = quietWhy(bundle);
-    const note = (m && m.utterances && m.utterances.length ? m.utterances[0].text : null) || (decision && decision.rationale) || "No agenda. The plan holds.";
-    this.transcript.innerHTML = `<div class="quiet"><div><b>Day ${day} is quiet</b><small>${esc(why)}</small></div></div>`;
-    // the chair's one line, as a single bubble from her avatar (ring lit, no floating bubble over the table)
-    this.seatEls.Megan.classList.add("is-speaking");
-    const row = document.createElement("div");
-    row.className = "utt k-decision utt-quiet";
-    row.innerHTML = `<div class="utt-av">Me</div><div class="utt-body"><div class="utt-head"><span class="utt-name">Megan</span><span class="utt-role">program manager</span><span class="utt-kind k-decision"><svg class="ic"><use href="#i-check"/></svg>chair's note</span></div><div class="utt-text">${esc(note)}</div></div>`;
-    this.transcript.appendChild(row);
-    this.foot.innerHTML = "";
-    if (decision) this.foot.appendChild(this.decisionBanner(decision, null, "Standing plan"));
-    this.sub.textContent = `Quiet day · standing plan continues · ${why}`;
-    this.narrate([`quiet day: ${why}`, `Megan keeps the plan: ${(decision && decision.effect) || "no change"}`], true);
+    this.setHead("No meeting today", `plan holds · ${why}`);
+    const note = (m && m.utterances && m.utterances.length ? m.utterances[0].text : null) || (decision && decision.rationale) || "The plan holds.";
+    this.transcript.innerHTML = "";
+    this.transcript.appendChild(this.row({ role: "Megan", role_id: "program_manager", title: (this.roles.program_manager || {}).title || "Program Manager", kind: "decision", text: note, kind_word: "CHAIR'S NOTE" }));
+    this.seat("program_manager") && this.seat("program_manager").classList.add("is-speaking");
+    this.showTitle(decision, "Standing plan", null);
+    this.dock.hidden = true; this.dock.innerHTML = "";
+    this.narrate([`no meeting today: ${why}`, `Megan keeps the plan: ${shortEffect((decision && decision.effect) || "no change")}`], true);
   }
 
-  open(day, kind, attendees, agenda) {
+  open(day, kind, attendeeIds, agenda) {
     this.day = day;
-    this.inRoom = new Set(attendees || []);
-    this.clearBubble();
-    for (const r of ROSTER) {
-      const g = this.seatEls[r.name];
-      g.classList.toggle("is-away", !this.inRoom.has(r.name));
-      g.classList.remove("is-speaking", "is-veto", "is-lock", "is-muted");
-    }
-    const esc_ = kind === "escalation";
-    const ag = (agenda || []).map(humanAgenda).join(" · ");
-    // Dana's lit seat and the status line already say she is in the room; the strip stays one line
-    this.setHead(esc_ ? "Escalation" : "Standup", ag ? `agenda: ${ag}` : "no agenda");
-    this.transcript.innerHTML = "";
-    this.foot.innerHTML = "";
+    this.inRoom = new Set(attendeeIds || []);
+    this.resetSeats(this.inRoom);
     this.notable = [];
+    this.lastSpeaker = null;
+    const esc_ = kind === "escalation";
     this.kindLabel = esc_ ? "Escalation · Dana in the room" : "Standup";
-    const guests = [...this.inRoom].filter((n) => ROSTER.some((r) => r.name === n && r.kind !== "core"));
-    this.sub.textContent = `${this.kindLabel} · ${this.inRoom.size} in the room` + (guests.length ? ` · ${guests.join(", ")} called in` : "");
-    this.narrate(guests.map((n) => `${n} is called in`));
+    const items = (agenda || []).map(humanAgenda);
+    const first = items[0] || "no agenda";
+    this.setHead(this.kindLabel, items.length > 1 ? `${first} (+${items.length - 1} more)` : first);
+    this.sub.title = items.join("\n");
+    this.transcript.innerHTML = "";
+    this.titleEl.hidden = true; this.titleEl.innerHTML = "";
+    this.dock.hidden = true; this.dock.innerHTML = "";
+    const guests = [...this.inRoom].filter((id) => this.roles[id] && this.roles[id].kind !== "core");
+    this.narrate(guests.map((id) => `${this.roles[id].name} is called in`));
   }
 
   utterance(u) {
-    const name = u.role;
-    for (const n in this.seatEls) this.seatEls[n].classList.remove("is-speaking");
-    const g = this.seatEls[name];
+    const id = u.role_id || u.role;
+    for (const k in this.seatEls) this.seatEls[k].classList.remove("is-speaking");
+    const g = this.seat(id);
     if (g) {
       g.classList.remove("is-away");
       g.classList.add("is-speaking");
-      if (u.kind === "veto") g.classList.add("is-veto");
-      if (u.kind === "lock") g.classList.add("is-lock");
+      if (u.kind === "veto") this.setChip(id, "VETOED", "c-veto");
+      if (u.kind === "lock") this.setChip(id, "LOCKED", "c-lock");
     }
-    this.showBubble(name, u);
-    if (u.kind === "veto") { this.notable.push(`${name} vetoes option ${u.option_label || ""}`.trim()); this.narrate([this.notable[this.notable.length - 1]]); }
-    if (u.kind === "lock") { this.notable.push(`${name} locks ${lockTarget(u.text)}`); this.narrate([this.notable[this.notable.length - 1]]); }
-    this.sub.textContent = `${this.kindLabel} · ${name} is speaking` + (this.notable.length ? ` · ${this.notable[this.notable.length - 1]}` : "");
-    const row = document.createElement("div");
-    row.className = `utt k-${u.kind}`;
-    const icon = KIND_ICON[u.kind] ? `<svg class="ic"><use href="${KIND_ICON[u.kind]}"/></svg>` : "";
-    const opt = u.option_label ? ` · option ${u.option_label}` : "";
-    row.innerHTML = `<div class="utt-av">${esc(name.slice(0, 2))}</div>
-      <div class="utt-body"><div class="utt-head"><span class="utt-name">${esc(name)}</span><span class="utt-role">${esc(u.title || "")}</span><span class="utt-kind k-${u.kind}">${icon}${esc(u.kind)}${opt}</span></div>
-      <div class="utt-text">${esc(u.text)}</div></div>`;
+    if (u.kind === "veto") { this.notable.push(`${u.role} vetoes option ${u.option_label || ""}`.trim()); this.narrate([this.notable[this.notable.length - 1]]); }
+    if (u.kind === "lock") { this.notable.push(`${u.role} locks ${lockTarget(u.text)}`); this.narrate([this.notable[this.notable.length - 1]]); }
+    for (const r of this.transcript.querySelectorAll(".utt.is-latest")) r.classList.remove("is-latest");
+    const row = this.row(u);
+    row.classList.add("is-latest");
     this.transcript.appendChild(row);
     this.transcript.scrollTop = this.transcript.scrollHeight;
   }
 
-  // The live bubble lives in its own row under the seats (never over a name); its pointer
-  // sits under the speaker's seat.
-  showBubble(name, u) {
-    this.clearBubble();
-    const [nx] = SEATS[name] || [0.5, 0.5];
-    const b = document.createElement("div");
-    b.className = `bubble-live k-${u.kind}`;
-    const text = u.text.length > 220 ? u.text.slice(0, 218) + "…" : u.text;
-    const r = this.tableEl.getBoundingClientRect();
-    b.style.setProperty("--ax", `${Math.round(Math.max(28, Math.min(r.width - 28, nx * r.width)))}px`);
-    b.innerHTML = `<span class="bubble-who">${esc(name)}</span><span class="bubble-text">${esc(text)}</span>`;
-    this.bubbleRow.appendChild(b);
-    this.bubble = b;
+  row(u) {
+    const row = document.createElement("div");
+    row.className = `utt k-${u.kind}`;
+    const icon = KIND_ICON[u.kind] ? `<svg class="ic"><use href="${KIND_ICON[u.kind]}"/></svg>` : "";
+    const word = u.kind_word || KIND_WORD[u.kind] || String(u.kind || "").toUpperCase();
+    const opt = u.option_label ? ` · option ${u.option_label}` : "";
+    row.innerHTML = `<div class="utt-av">${esc(String(u.role || "").slice(0, 2))}</div>
+      <div class="utt-body"><div class="utt-head"><span class="utt-name">${esc(u.role)}</span><span class="utt-role">${esc(u.title || "")}</span><span class="utt-kind k-${u.kind}">${icon}${esc(word)}${esc(opt)}</span></div>
+      <div class="utt-text">${esc(u.text)}</div></div>`;
+    return row;
   }
 
-  clearBubble() { if (this.bubble) { this.bubble.remove(); this.bubble = null; } }
+  close(options, decision) {
+    for (const k in this.seatEls) this.seatEls[k].classList.remove("is-speaking");
+    this.showTitle(decision, "Decision", options);
+    this.renderDock(options, decision);
+    const opt = decision && decision.option_id && options ? (options.find((o) => o.option_id === decision.option_id) || {}).label : null;
+    const dec = decision ? (opt ? `option ${opt} chosen` : "decided") : "no decision";
+    this.setHead(this.kindLabel, (this.notable.length ? this.notable.join(" · ") + " · " : "") + dec);
+    this.narrate([`decided: ${shortEffect(decision ? decision.effect : "no change")}`]);
+  }
 
-  close(options, decision, outcome) {
-    for (const n in this.seatEls) this.seatEls[n].classList.remove("is-speaking");
-    this.foot.innerHTML = "";
-    if (options && options.length) {
-      const wrap = document.createElement("div");
-      wrap.className = "options";
-      const pick = decision && decision.option_id;
-      for (const o of options) {
-        const d = document.createElement("div");
-        const isPick = pick === o.option_id;
-        d.className = `opt ${isPick ? "is-pick" : ""} ${o.vetoed_by ? "is-veto" : ""} ${o.feasible === false ? "is-infeasible" : ""}`;
-        const flag = o.vetoed_by ? `<span class="opt-flag f-veto"><svg class="ic"><use href="#i-veto"/></svg>vetoed by ${esc(o.vetoed_by)}</span>`
-          : o.feasible === false ? `<span class="opt-flag f-no"><svg class="ic"><use href="#i-x"/></svg>infeasible</span>`
-          : `<span class="opt-flag f-ok"><svg class="ic"><use href="#i-check"/></svg>feasible</span>`;
-        d.innerHTML = `<div class="opt-head"><span class="opt-l">${esc(o.label)}</span><span class="opt-by">${esc(o.proposed_by)}</span><span class="opt-score" title="scorecard score, higher is better">${o.score != null ? o.score.toFixed(2) : "—"}</span></div>
-          <div class="opt-bar"><i></i></div>
-          <div class="opt-levers">${esc(o.effect || (o.lever_labels || []).join(" · "))}</div>
-          <div class="opt-raw" title="${esc((o.lever_labels || []).join("; "))}">${esc((o.lever_labels || []).join(" · "))}</div>${flag}`;
-        wrap.appendChild(d);
-        requestAnimationFrame(() => { d.querySelector(".opt-bar i").style.transform = `scaleX(${Math.min(1, o.score || 0)})`; });
+  // The decision becomes the room's title once the meeting has closed (read order: clock → decision).
+  showTitle(decision, kicker, options) {
+    if (!decision) { this.titleEl.hidden = true; return; }
+    const letters = options ? Object.fromEntries(options.map((o) => [o.option_id, o])) : {};
+    const chosen = decision.option_id ? letters[decision.option_id] : null;
+    const opt = chosen ? `Option ${chosen.label}: ` : "";
+    const effect = decision.effect || (decision.lever_labels || []).join(" · ") || "no change";
+    let why = decision.rationale || "";
+    if (kicker !== "Decision") why = `${decision.decided_by || "Megan"} keeps yesterday's plan`;
+    let override = "";
+    if (options && options.length && chosen) {
+      const top = [...options].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      if (top && top.option_id !== chosen.option_id) {
+        override = top.vetoed_by ? `${top.label} vetoed by ${top.vetoed_by}, so ${chosen.label}` : `${top.label} scored higher; ${decision.decided_by || "the chair"} chose ${chosen.label}`;
       }
-      this.foot.appendChild(wrap);
     }
-    if (decision) this.foot.appendChild(this.decisionBanner(decision, options));
-    const eff = decision ? (decision.effect || (decision.lever_labels || []).join(" · ")) : "no decision";
-    const opt = decision && decision.option_id ? ` · option ${decision.option_id.split("-").pop()} chosen` : " · decided";
-    this.sub.textContent = `${this.kindLabel}` + (this.notable.length ? ` · ${this.notable.join(" · ")}` : "") + opt + " (see banner)";
-    this.narrate([`decided: ${eff}`]);
+    this.titleEl.hidden = false;
+    this.titleEl.innerHTML = `<span class="decision-k">${esc(kicker)}</span><div class="decision-body"><div class="decision-t">${esc(cap(opt + effect))}</div>
+      <div class="decision-r">${override ? `<span class="decision-why">${esc(override)}.</span> ` : ""}<span class="decision-why-t">${esc(why)}</span></div></div>`;
+    const r = this.titleEl.querySelector(".decision-r");
+    requestAnimationFrame(() => { if (r.scrollHeight > r.clientHeight + 2) { const b = document.createElement("button"); b.className = "decision-more"; b.textContent = "show why"; b.addEventListener("click", () => { r.classList.add("is-open"); b.remove(); }); r.after(b); } });
   }
 
-  decisionBanner(decision, options, kicker = "Decision") {
-    const d = document.createElement("div");
-    d.className = "decision";
-    const levers = (decision.lever_labels || []).join(" · ") || "no change";
-    const effect = decision.effect || levers;
-    const opt = decision.option_id ? `Option ${decision.option_id.split("-").pop()}: ` : "";
-    const dev = decision.deviates_from_top_score ? " · chair overrode the top score" : "";
-    const rat = kicker === "Decision" ? esc(decision.rationale || "") + esc(dev) : `${esc(decision.decided_by || "Megan")} keeps yesterday's plan${esc(dev)}`;
-    d.innerHTML = `<span class="decision-k">${esc(kicker)}</span><div><div class="decision-t">${esc(cap(opt + effect))}</div><div class="decision-r">${rat}</div><div class="decision-l">${esc(levers)}</div></div>`;
-    return d;
+  renderDock(options, decision) {
+    this.dock.innerHTML = "";
+    if (!options || !options.length) { this.dock.hidden = true; return; }
+    this.dock.hidden = false;
+    const wrap = document.createElement("div");
+    wrap.className = "options";
+    const pick = decision && decision.option_id;
+    for (const o of options) {
+      const d = document.createElement("div");
+      const isPick = pick === o.option_id;
+      d.className = `opt ${isPick ? "is-pick" : ""} ${o.vetoed_by ? "is-veto" : ""} ${o.feasible === false ? "is-infeasible" : ""}`;
+      const status = o.vetoed_by ? "vetoed" : o.feasible === false ? "infeasible" : isPick ? "chosen" : "feasible";
+      const lock = o.locks ? `<svg class="ic opt-lock" title="locks SKUs in place"><use href="#i-lock"/></svg>` : "";
+      d.innerHTML = `<span class="opt-head"><span class="opt-l">${esc(o.label)}</span><span class="opt-by">${esc(o.proposed_by)}</span>
+        <span class="opt-score" title="scorecard score out of 1"><i class="opt-bar"><b style="transform:scaleX(${Math.min(1, Math.max(0, o.score || 0)).toFixed(3)})"></b></i>${o.score != null ? o.score.toFixed(2) : "—"} / 1</span>
+        <span class="opt-status s-${status}">${esc(status)}</span>${lock}</span>
+        <span class="opt-levers">${esc(o.effect || (o.lever_labels || []).join(" · "))}</span>
+        ${o.vetoed_by ? `<span class="opt-stamp" aria-hidden="true">VETOED by ${esc(o.vetoed_by)}</span>` : ""}
+        <span class="opt-detail" hidden>${esc((o.lever_labels || []).join(" · "))}${o.evidence_id ? ` · evidence ${esc(o.evidence_id)}` : ""}</span>`;
+      d.title = `${o.label} · ${o.proposed_by} · ${(o.lever_labels || []).join("; ")} · click for details`;
+      d.addEventListener("click", () => { d.classList.toggle("is-open"); const det = d.querySelector(".opt-detail"); det.hidden = !d.classList.contains("is-open"); });
+      wrap.appendChild(d);
+    }
+    this.dock.appendChild(wrap);
   }
 
   // Render a whole day at once (jump / resume without streaming the meeting).
   renderDay(bundle) {
-    this.setActiveHires(bundle.active_hires);
+    if (bundle.roles) this.setRoles(bundle.roles);
+    this.setActiveHires(bundle.active_hire_ids);
     const m = bundle.meeting;
     if (!m || m.kind === "quiet") { this.quietDay(bundle); return; }
     this.narrate((bundle.events || []).map((e) => e.plain), true);
-    this.open(bundle.day, m.kind, m.attendees, m.agenda);
+    this.open(bundle.day, m.kind, m.attendee_ids, m.agenda);
     for (const u of m.utterances) this.utterance(u);
-    this.clearBubble();
-    this.close(m.options, bundle.decision, m.outcome);
+    this.close(m.options, bundle.decision);
+    this.transcript.scrollTop = this.transcript.scrollHeight;
   }
 }
 
-// Agenda strings come from the org as "kind: detail"; make the kind readable.
+// Agenda strings come from the org as "kind: detail" or prose; make the kind readable.
 function humanAgenda(s) {
   return String(s ?? "").replace(/^([a-z_]+):/, (m, k) => k.replace(/_/g, " ") + ":");
+}
+// First effect clause only, for the narration chain ("aisle 7 closed for 5 days")
+function shortEffect(e) {
+  const first = String(e || "").split(";")[0].trim();
+  const n = String(e || "").split(";").length;
+  return n > 1 ? `${first} (+${n - 1} more)` : first;
 }
 function cap(s) { s = String(s ?? ""); return s.charAt(0).toUpperCase() + s.slice(1); }
 function lockTarget(text) {
   const m = /\b([A-Z]\d{3})\b/.exec(text || "");
   return m ? `${m[1]}'s SKUs in place` : "SKUs in place";
 }
-
-// One short reason line for a quiet day, derived from the day bundle (not hardcoded).
+// One short reason line for a day without a meeting, derived from the day bundle (not hardcoded).
 function quietWhy(b) {
   const parts = [];
-  parts.push((b.events || []).length ? `${b.events.length} event(s) logged but no agenda` : "no new events");
+  parts.push((b.events || []).length ? `${b.events.length} event${b.events.length > 1 ? "s" : ""} logged` : "no new events");
   const failed = (b.checks || []).filter((c) => c.scope === "daily" && c.passed === false);
-  parts.push(failed.length ? `${failed.length} check(s) outside target` : "KPIs within target");
-  if ((b.drift || []).length) parts.push("drift flagged");
-  return parts.join(", ");
+  parts.push(failed.length ? `${failed.length} KPI${failed.length > 1 ? "s" : ""} off target` : "KPIs on target");
+  if ((b.drift || []).length) parts.push("forecast drift flagged");
+  return parts.join(" · ");
 }
-
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])); }

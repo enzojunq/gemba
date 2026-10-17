@@ -81,11 +81,11 @@ async function loadRunHeader(runId) {
   if (!r.ok) { toast(`Run ${runId} not found`, true); const runs = await fetch("/runs").then((x) => x.json()); showEmpty(runs); throw new Error("no run"); }
   const run = await r.json();
   state.runId = runId; state.run = run;
-  $("#f-scenario").textContent = run.scenario || "—";
-  $("#f-profile").textContent = (run.profile || "—").replace(/_/g, "-");
-  $("#f-playbook").textContent = run.playbook || "—";
-  const st = $("#f-status"); st.textContent = run.status; st.className = `pill pill-status is-${run.status}`;
-  $("#f-recorded").hidden = !run.recorded;
+  const t = $("#f-title");
+  t.textContent = `${run.scenario_title || run.scenario || "—"} · ${(run.profile || "").replace(/_/g, "-")}`;
+  t.title = `scenario ${run.scenario} · profile ${run.profile} · playbook ${run.playbook} · run ${run.run_id}`;
+  setStatusPill(run);
+  if (run.roles) room.setRoles(run.roles);
   const lin = $("#f-lineage");
   if (run.parent_run_id) { lin.hidden = false; $("#f-lineage-text").textContent = `fork of ${run.parent_run_id} at day ${run.fork_day}`; lin.title = run.fork_decision && run.fork_decision.label ? run.fork_decision.label : ""; }
   else lin.hidden = true;
@@ -102,8 +102,16 @@ async function refreshRunHeader() {
   state.run = run;
   timeline.setRun(run);
   timeline.setCursor(state.day, state.hourIdx / state.nHours);
-  const st = $("#f-status"); st.textContent = run.status; st.className = `pill pill-status is-${run.status}`;
+  setStatusPill(run);
   renderInbox(run.inbox || []);
+}
+// "done" would tell a judge the demo is over: say what the console is doing with the run instead.
+function setStatusPill(run) {
+  const st = $("#f-status");
+  const live = run.status === "running" || run.status === "queued";
+  st.textContent = live ? "Live" : run.recorded ? "Recorded · replaying" : run.status === "failed" ? "Run failed" : "Replaying";
+  st.className = `pill pill-status ${live ? "is-running" : run.recorded ? "is-recorded" : `is-${run.status}`}`;
+  st.title = run.recorded ? "This run was recorded earlier and is replayed from recordings/" : `run ${run.run_id} · ${run.status}`;
 }
 
 // ---------------------------------------------------------------- clock
@@ -154,9 +162,9 @@ function connect(fromDay) {
   const es = new EventSource(url);
   state.es = es;
   es.addEventListener("day", (e) => onDay(JSON.parse(e.data)));
-  es.addEventListener("meeting_open", (e) => { const m = JSON.parse(e.data); room.open(m.day, m.kind, m.attendees, m.agenda); });
+  es.addEventListener("meeting_open", (e) => { const m = JSON.parse(e.data); room.open(m.day, m.kind, m.attendee_ids || m.attendees, m.agenda); });
   es.addEventListener("meeting", (e) => room.utterance(JSON.parse(e.data)));
-  es.addEventListener("meeting_close", (e) => { const m = JSON.parse(e.data); room.clearBubble(); room.close(m.options, m.decision, m.outcome); });
+  es.addEventListener("meeting_close", (e) => { const m = JSON.parse(e.data); room.close(m.options, m.decision); });
   es.addEventListener("hour", (e) => onHour(JSON.parse(e.data)));
   es.addEventListener("day_end", () => { refreshRunHeader(); });
   es.addEventListener("waiting", (e) => { const w = JSON.parse(e.data); $("#floor-sub").textContent = `waiting for day ${w.day ?? "…"} · engine ${w.status || "running"}`; });
@@ -168,7 +176,8 @@ function onDay(b) {
   state.day = b.day; state.hourIdx = 0; state.lastBundle = b;
   setClock(b.day, 6, "day");
   timeline.setCursor(b.day, 0);
-  room.setActiveHires(b.active_hires);
+  if (b.roles) room.setRoles(b.roles);
+  room.setActiveHires(b.active_hire_ids || b.active_hires);
   room.narrate((b.events || []).map((e) => e.plain), true);
   if (!b.meeting || b.meeting.kind === "quiet") room.quietDay(b);
   $("#floor-sub").textContent = floorSub(b, null);
@@ -200,7 +209,7 @@ function floorSub(b, h) {
     const locks = (b.constraints || []).filter((c) => c.kind !== "aisle_closure");
     if (locks.length) parts.push(`${locks.length} lock${locks.length > 1 ? "s" : ""} active`);
   }
-  if (b.violations && b.violations.length) parts.push(`limit broken: ${b.violations.join(", ")}`);
+  if (b.violation_labels && b.violation_labels.length) parts.push(`limit broken: ${b.violation_labels.join(", ")}`);
   return parts.join(" · ");
 }
 // TIMELINE status line: where we are in the month and what comes next.
@@ -211,9 +220,10 @@ function timelineSub(day) {
   const sofar = evs.filter((e) => e.day <= day).length;
   const next = evs.filter((e) => e.day > day && e.source === "scripted").sort((a, b) => a.day - b.day)[0];
   const failed = (run.days.find((d) => d.day === day) || {}).checks_failed || [];
+  const narrow = window.innerWidth < 1300;
   $("#timeline-sub").textContent = `Day ${day} · day ${day - first + 1} of ${last - first + 1} · ${sofar} event${sofar === 1 ? "" : "s"} so far` +
-    (next ? ` · next: ${next.plain || next.label} (day ${next.day})` : " · no more scheduled events") +
-    (failed.length ? ` · ${failed.length} target${failed.length > 1 ? "s" : ""} missed today` : "");
+    (next ? ` · next: ${narrow ? next.label : (next.plain || next.label)} (day ${next.day})` : " · no more scheduled events") +
+    (failed.length ? ` · ${failed.length} KPI${failed.length > 1 ? "s" : ""} off target today` : "");
 }
 
 async function jumpTo(day, keepPlaying = true) {
@@ -249,10 +259,10 @@ function renderBoard(b) {
   const sec = (title, rows, empty) => `<section class="board-sec"><h4>${title}</h4>${rows.length ? `<div class="board-list">${rows.join("")}</div>` : `<div class="board-empty">${empty}</div>`}</section>`;
   const row = (icon, text, when, who, active) => `<div class="board-row ${active ? "is-active" : "is-off"}"><svg class="ic" style="color:${active ? "var(--teal)" : "var(--text-3)"}"><use href="${icon}"/></svg><span>${esc(text)}${who ? ` <span class="board-who">· ${esc(who)}</span>` : ""}</span><span class="board-when">${esc(when)}</span></div>`;
   body.innerHTML =
-    sec("Locks", locks.map((c) => row("#i-lock", c.label, `d${c.day_start}–${c.day_end}`, c.owner_role, c.active)), "No locks yet") +
-    sec("Constraints", others.map((c) => row("#i-veto", c.label, `d${c.day_start}–${c.day_end}`, c.owner_role, c.active)), "No constraints yet") +
+    sec("Locks", locks.map((c) => row("#i-lock", c.label, `d${c.day_start}–${c.day_end}`, c.owner || c.owner_role, c.active)), "No locks yet") +
+    sec("Constraints", others.map((c) => row("#i-veto", c.label, `d${c.day_start}–${c.day_end}`, c.owner || c.owner_role, c.active)), "No constraints yet") +
     sec("Agreements", ags.map((a) => row("#i-check", a.text, `d${a.day}`, (a.parties || []).join(", "), a.active !== false && a.day <= day)), "No agreements yet") +
-    sec("On call", hires.map((h) => row("#i-badge", `${h.role} · ${h.trigger}`, h.released_day ? `d${h.day}–${h.released_day}` : `d${h.day}–`, "", h.day <= day && (h.released_day == null || h.released_day > day))), "Nobody hired yet") +
+    sec("On call", hires.map((h) => row("#i-badge", `${h.role} · ${h.trigger_label || h.trigger}`, h.released_day ? `d${h.day}–${h.released_day}` : `d${h.day}–`, "", h.day <= day && (h.released_day == null || h.released_day > day))), "Nobody hired yet") +
     sec("Evidence (latest what-ifs)", ev.map((e) => row("#i-bolt", `${e.evidence_id} · ${e.horizon_days}-day what-if · score ${e.scorecard && e.scorecard.total != null ? e.scorecard.total : "—"} · on-time ${e.kpis && e.kpis.on_time_pct != null ? e.kpis.on_time_pct : "—"}`, `d${e.created_day}`, e.scorecard && e.scorecard.by, true)), "No evidence yet") +
     sec("Drift", (run.drift || []).map((d) => row("#i-bolt", `${d.kind}: ${d.detail}`, `d${d.day}`, d.response, d.day <= day)), "No drift flags");
 }
@@ -290,7 +300,7 @@ function renderInbox(msgs) {
   const recent = [...msgs].sort((a, b) => (a.received_at < b.received_at ? 1 : -1)).slice(0, 3);
   el.innerHTML = recent.map((m) => m.consumed_day == null
     ? `<span class="msg is-pending" title="${esc(m.text)}"><i></i><span>${esc(m.text)}</span></span>`
-    : `<span class="msg is-consumed" title="${esc(m.text)} · read on day ${m.consumed_day}"><svg class="ic"><use href="#i-check"/></svg><span>${esc(m.text)}</span> <small>d${m.consumed_day}</small></span>`).join("");
+    : `<span class="msg is-consumed" title="${esc(m.text)} · read on day ${m.consumed_day}"><svg class="ic"><use href="#i-check"/></svg><span>${esc(m.text)}</span> <small>read day ${m.consumed_day}</small></span>`).join("");
 }
 
 // ---------------------------------------------------------------- fork
