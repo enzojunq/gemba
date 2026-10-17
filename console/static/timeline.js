@@ -41,7 +41,7 @@ export class Timeline {
     const d0 = this.run && this.run.first_day != null ? Math.min(61, this.run.first_day) : 61;
     const d1 = this.run && this.run.last_day != null ? Math.max(90, this.run.last_day) : 90;
     const n = d1 - d0 + 1;
-    const colW = (W - left - right) / n;
+    const colW = Math.max(0.5, (W - left - right) / n);
     const x = (day) => left + (day - d0) * colW;
     return { W, H, left, right, top, d0, d1, n, colW, x, days };
   }
@@ -70,7 +70,7 @@ export class Timeline {
       if ((d - d0) % 1 === 0) svg.appendChild(line);
       const t = el("text", { class: "tl-day", x: cx, y: H - 3 }); t.textContent = d; t.dataset.day = d;
       svg.appendChild(t);
-      const hit = el("rect", { class: "tl-hit", x: x(d), y: top, width: colW, height: axisY - top });
+      const hit = el("rect", { class: "tl-hit", x: x(d), y: top, width: colW, height: Math.max(0, axisY - top) });
       hit.addEventListener("click", () => this.onJump && this.onJump(d));
       hit.addEventListener("mouseenter", (e) => this.showTip(e, this.dayTip(d)));
       hit.addEventListener("mouseleave", () => this.hideTip());

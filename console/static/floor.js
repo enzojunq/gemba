@@ -534,7 +534,7 @@ export class Floor {
       return parts.join("  ·  ");
     };
     const long = build([["pm", "Pick Module pickers"], ["forklift", "forklift pickers"], ["consolidation", "consolidator"], ["loading", "loaders"], ["night_move", "movers"], ["temp", "temps"]]);
-    const short = build([["pm", "PM pickers"], ["forklift", "forklifts"], ["consolidation", "consol."], ["loading", "loaders"], ["night_move", "movers"], ["temp", "temps"]]);
+    const short = build([["pm", "Pick Module"], ["forklift", "forklifts"], ["consolidation", "consolidator"], ["loading", "loaders"], ["night_move", "movers"], ["temp", "temps"]]);
     // right-hand pool counts must never run into the phase label: shorten, then drop the hint
     ctx.font = "500 11px JetBrains Mono, monospace";
     const poolsW = ctx.measureText(long).width, shortW = ctx.measureText(short).width;

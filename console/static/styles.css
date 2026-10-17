@@ -227,7 +227,7 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 600; lett
 #floor { flex: 1; width: 100%; height: 100%; display: block; background: var(--fl-floor); }
 .room-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .narr { flex: none; display: flex; gap: 8px; align-items: baseline; padding: 7px 14px; font-size: 13.5px; line-height: 1.35; border-bottom: 1px solid var(--line); background: var(--bg-2); color: var(--text); min-height: 36px; }
-.narr-t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.narr-t { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .narr-k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--amber); font-weight: 600; white-space: nowrap; }
 .narr-t { animation: utt-in 0.3s var(--ease); }
 .narr-t .arrow { color: var(--amber); margin: 0 4px; }
@@ -236,7 +236,8 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 600; lett
 
 /* ---------------------------------------------------------------- meeting room */
 .room-table { position: relative; flex: none; height: 150px; }
-@media (max-height: 900px) { .opt-raw, .decision-l { display: none; } .narr { font-size: 13px; } }
+.transcript { min-height: 0; }
+}
 .room-table svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .mtg-head { flex: none; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 7px 14px 5px; font-size: 13.5px; line-height: 1.35; border-bottom: 1px solid var(--line); }
 .mtg-kind { font-family: var(--font-display); font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text); white-space: nowrap; }
@@ -297,7 +298,7 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 600; lett
 .utt-text { color: var(--text); }
 .utt.k-veto .utt-text { color: var(--red); }
 
-.room-foot { flex: none; max-height: 46%; overflow: auto; border-top: 1px solid var(--line); padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
+.room-foot { flex: none; border-top: 1px solid var(--line); padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
 .options { display: flex; gap: 8px; }
 .opt { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); position: relative; }
 .opt.is-pick { border-color: var(--amber); background: var(--amber-dim); }
@@ -319,7 +320,7 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 600; lett
 .opt-flag.f-no { color: var(--red); }
 .decision { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; padding: 8px 11px; flex: none; border-radius: 8px; background: var(--amber); color: var(--amber-ink); animation: utt-in 0.4s var(--ease); }
 .decision-k { font-family: var(--font-display); font-weight: 700; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.08em; padding-top: 2px; }
-.decision-t { font-family: var(--font-display); font-weight: 700; font-size: 19px; letter-spacing: -0.01em; line-height: 1.2; }
+.decision-t { font-family: var(--font-display); font-weight: 700; font-size: 19px; letter-spacing: -0.01em; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .decision-l { font-family: var(--font-data); font-size: 11.5px; opacity: 0.75; margin-top: 3px; }
 .decision-r { font-size: 13px; opacity: 0.9; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .quiet { flex: 1; display: grid; place-items: center; text-align: center; padding: 8px 16px; color: var(--text-2); }
@@ -517,4 +518,38 @@ body.is-compare #btn-play, body.is-compare #speed, body.is-compare #btn-fork, bo
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* short screens (laptop 800–900px tall): the room keeps options + decision fully visible */
+@media (max-height: 900px) {
+  .room-table { height: 128px; }
+  .opt-raw, .decision-l { display: none; }
+  /* narration runs inline after its label so the whole chain fits in two full-width lines */
+  .narr { display: block; font-size: 13px; line-height: 1.3; max-height: 66px; overflow: hidden; }
+  .narr-k { display: inline; margin-right: 8px; }
+  .narr-t { display: inline; }
+  .bubble-row { display: none; }               /* the latest line is the transcript's last row instead */
+  .transcript .utt:last-child { padding: 4px 6px; border-radius: 6px; background: var(--amber-dim); }
+  .transcript .utt:last-child .utt-av { border-color: var(--amber); }
+  .decision { padding: 6px 11px; }
+  .decision-t { font-size: 17px; }
+  /* options collapse to one compact line each so the transcript keeps a few lines */
+  .options { flex-direction: column; gap: 4px; }
+  .opt { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) auto; align-items: center; column-gap: 10px; padding: 4px 10px; }
+  .opt-head { display: contents; }
+  .opt-l { font-size: 14px; }
+  .opt-score { margin-left: 0; }
+  .opt-bar, .opt-raw { display: none; }
+  .opt-levers { -webkit-line-clamp: 2; font-size: 12.5px; }
+  .room-foot { padding: 6px 12px 8px; gap: 6px; }
+
+/* laptop at 800px tall: the decision title carries the decision; its rationale is in the transcript */
+@media (max-height: 820px) {
+  .room-table { height: 118px; }
+  .decision-r { display: none; }
+}
+/* narrow stage: the timeline legend drops under the status line instead of truncating it */
+@media (max-width: 1300px) {
+  .timeline .pane-head { flex-wrap: wrap; row-gap: 2px; }
+  .timeline .tl-legend { flex-basis: 100%; margin-left: 0; justify-content: flex-end; }
 }

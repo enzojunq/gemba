@@ -19,7 +19,7 @@ const SEATS = {
   Sam: [0.27, 1], Ellen: [0.42, 1], Marcus: [0.58, 1], Tom: [0.75, 1],
 };
 // seat centre y in px for a seat area of height H (two rows, name + title under each ring)
-const seatY = (row, H) => (row === 0 ? 22 : Math.max(84, H - 46));
+const seatY = (row, H) => (row === 0 ? 20 : Math.max(84, H - 44));
 const KIND_ICON = { veto: "#i-veto", lock: "#i-lock", decision: "#i-check", proposal: "#i-bolt" };
 
 export class Room {
@@ -85,19 +85,26 @@ export class Room {
     this.seatsSvg = seats;
     this.ro = new ResizeObserver(() => this.placeSeats());
     this.ro.observe(this.tableEl);
+    // a transcript squeezed under two lines shows half a row and reads as a glitch: hide it instead
+    this.roT = new ResizeObserver(() => { const h = this.transcript.getBoundingClientRect().height; this.transcript.style.visibility = h < 38 ? "hidden" : ""; });
+    this.roT.observe(this.transcript);
     this.placeSeats();
   }
 
   placeSeats() {
     const r = this.tableEl.getBoundingClientRect();
     this.seatsSvg.setAttribute("viewBox", `0 0 ${r.width} ${r.height}`);
+    const compact = r.height < 126;  // laptop heights: tighter rows, name + title closer to the ring
     for (const name in this.seatEls) {
       const [nx, row] = SEATS[name];
       const g = this.seatEls[name].querySelector(".seat-pos");
-      g.setAttribute("transform", `translate(${(nx * r.width).toFixed(1)},${seatY(row, r.height).toFixed(1)})`);
+      const y = compact ? (row === 0 ? 18 : r.height - 36) : seatY(row, r.height);
+      g.setAttribute("transform", `translate(${(nx * r.width).toFixed(1)},${y.toFixed(1)})`);
+      g.querySelector(".seat-name").setAttribute("y", compact ? 27 : 30);
+      g.querySelector(".seat-title").setAttribute("y", compact ? 37 : 41);
     }
     this.oncallLabel.setAttribute("x", (0.27 * r.width - 40).toFixed(1));
-    this.oncallLabel.setAttribute("y", (seatY(1, r.height) + 4).toFixed(1));
+    this.oncallLabel.setAttribute("y", ((compact ? r.height - 36 : seatY(1, r.height)) + 4).toFixed(1));
   }
 
   setHead(kind, agenda) {
@@ -164,14 +171,15 @@ export class Room {
     }
     const esc_ = kind === "escalation";
     const ag = (agenda || []).map(humanAgenda).join(" · ");
-    this.setHead(esc_ ? "Escalation · Dana in the room" : "Standup", ag ? `agenda: ${ag}` : "no agenda");
+    // Dana's lit seat and the status line already say she is in the room; the strip stays one line
+    this.setHead(esc_ ? "Escalation" : "Standup", ag ? `agenda: ${ag}` : "no agenda");
     this.transcript.innerHTML = "";
     this.foot.innerHTML = "";
     this.notable = [];
     this.kindLabel = esc_ ? "Escalation · Dana in the room" : "Standup";
     const guests = [...this.inRoom].filter((n) => ROSTER.some((r) => r.name === n && r.kind !== "core"));
     this.sub.textContent = `${this.kindLabel} · ${this.inRoom.size} in the room` + (guests.length ? ` · ${guests.join(", ")} called in` : "");
-    this.narrate(guests.map((n) => `${n} (${(ROSTER.find((r) => r.name === n) || {}).title}) joined the meeting`));
+    this.narrate(guests.map((n) => `${n} is called in`));
   }
 
   utterance(u) {
@@ -185,8 +193,8 @@ export class Room {
       if (u.kind === "lock") g.classList.add("is-lock");
     }
     this.showBubble(name, u);
-    if (u.kind === "veto") { this.notable.push(`${name} vetoed option ${u.option_label || ""}`.trim()); this.narrate([this.notable[this.notable.length - 1]]); }
-    if (u.kind === "lock") { this.notable.push(`${name} locked ${lockTarget(u.text)}`); this.narrate([this.notable[this.notable.length - 1]]); }
+    if (u.kind === "veto") { this.notable.push(`${name} vetoes option ${u.option_label || ""}`.trim()); this.narrate([this.notable[this.notable.length - 1]]); }
+    if (u.kind === "lock") { this.notable.push(`${name} locks ${lockTarget(u.text)}`); this.narrate([this.notable[this.notable.length - 1]]); }
     this.sub.textContent = `${this.kindLabel} · ${name} is speaking` + (this.notable.length ? ` · ${this.notable[this.notable.length - 1]}` : "");
     const row = document.createElement("div");
     row.className = `utt k-${u.kind}`;
@@ -241,7 +249,8 @@ export class Room {
     }
     if (decision) this.foot.appendChild(this.decisionBanner(decision, options));
     const eff = decision ? (decision.effect || (decision.lever_labels || []).join(" · ")) : "no decision";
-    this.sub.textContent = `${this.kindLabel}` + (this.notable.length ? ` · ${this.notable.join(" · ")}` : "") + ` · decided: ${eff}`;
+    const opt = decision && decision.option_id ? ` · option ${decision.option_id.split("-").pop()} chosen` : " · decided";
+    this.sub.textContent = `${this.kindLabel}` + (this.notable.length ? ` · ${this.notable.join(" · ")}` : "") + opt + " (see banner)";
     this.narrate([`decided: ${eff}`]);
   }
 
