@@ -288,7 +288,7 @@ Runs at the end of each day. Each rule reads state and KPIs and may emit an even
 | C3 | A pool worked overtime on 3 of the last 4 days | `absenteeism(+15%, 3 days)` |
 | C4 | Staging occupancy > 90% at 06:00 | `staging_congestion` (aisles near staging slow down, safety risk up) |
 | C5 | Near-miss occurred in an aisle | `safety_review(aisle)`; a second near-miss within 5 days forces `aisle_closure(aisle, 3 days)` |
-| C6 | On-time < profile target for 2 consecutive days | `director_escalation(on_time)` |
+| C6 | On-time < profile target − 2 points for 2 consecutive days (same slack as the daily done-check; agreed A/B 12:25, since normal days calibrate at 94–97%) | `director_escalation(on_time)` |
 | C7 | Stockout lines > 1% of lines | `replen_alert` (Replenishment Lead hired) |
 | C8 | Temps active | ramp state (productivity, mis-picks) for 5 days |
 

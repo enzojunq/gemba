@@ -75,7 +75,30 @@ One section per phase: what was built, how it is tested, what is pending. Update
 
 **Model decision 12:25:** Nemotron Ultra is not in the Crusoe catalog today, so `MODEL_ULTRA` = the Super id. Tier mapping in code unchanged (spec Part D #26).
 
-## Phase 2 - engine day loop, forks, drift, verifier runner, engine API (B5, B9) - in progress (lane 5)
+## Phase 2 - engine day loop, forks, drift, verifier runner, engine API (B5, B9) - done 12:30
+
+**Built**
+- `engine/run.py`: the CONTRACT section 6 day loop over any `FloorTwin` + `DecisionPolicy`. `make_twin("auto")` imports `floor.twin.make_twin()` / `Twin()` and falls back to `StubTwin` with a warning (this is the whole integration switch). `make_policy` builds baselines or `OrgPolicy`. CLI: `python -m engine.run --scenario --profile --policy --seed --days 61-70`.
+- `engine/fork.py`: restores the parent's day-1 snapshot, copies rows before the fork day, re-logs pending consequences, forces the fork-day decision, then the policy decides normally. CLI `python -m engine.fork --run --day --levers`.
+- `engine/drift.py`: all spec 11.4 detectors (repeat what-if, plan churn, stall without a reason, prediction error > 15% for 2 days which triggers `twin.recalibrate`, LLM overrun); a repeating flag becomes `shrink_or_stop`.
+- `engine/verifier.py`: `check_day` / `check_final` evaluate every `DoneCheck`; derived metrics missing are skipped, not failed.
+- `engine/snapshot.py`: pickled per-day payload (state, pending consequences, constraints, hires, checks, drift counters, scenario, inbox events).
+- `engine/events.py`: `load_scenario`, `build_calendar`, `parse_inbox` hook (replaced by the Event Interpreter in Phase 3).
+- `engine/api.py`: `start_run`, `fork_run`, `run_status` (background threads; return once the `runs` row exists) for A's console.
+- `scenarios/reslot_default.yaml`: the spec 9.5 calendar, valid against `contracts.Scenario`.
+- Store additions: tolerant JSON decoding (the `drift_flags.response` text column), `relog_events`, `write_checks`, `llm_usd_total`, `drift_flag_rows`.
+
+**Tests** - `tests/test_engine.py` (9), `tests/test_fork.py` (5), `tests/test_drift.py` (8), `tests/test_verifier_runner.py` (3) - suite total 119
+- 30-day StaticRules run on StubTwin finishes in 1.5 s with 30 `day_results` + 30 `decisions`; two runs with the same seed give identical KPI JSON per day.
+- NaiveBigBang triggers a `customer_escalation` whose cascade walks back to a `dec:` node.
+- Fork at the escalation day: child equals parent before the fork day, differs after; `parent_run_id` set; pending consequences re-logged exactly once.
+- `--days 61-70` trims to 10 days; drift detectors fire on their streaks and escalate on repeat; failing on-time day writes a `checks` row with `passed=False`; `api.start_run` reaches "done".
+
+**Measured (StubTwin, StaticRules, 30 days):** on-time 94.4, mis-pick 0.48%, LPH 99.0, progress 100%, labor cost $538,560. Stub numbers, not the real twin.
+
+**Known gap:** `final.score >= 0` is weaker than "at least static rules" because `reslot_progress_pct` is scored with REF = 0 (a run scored against itself is not 0). Resolve in the eval harness (B10) by reporting score deltas between contenders rather than through this check.
+
+**Integration notes for A (CONTRACT section 4):** expose `floor/twin.py` with `make_twin()` or `Twin()`; `engine.run` picks it up automatically.
 ## Phase 3 - standup / OrgPolicy, board, Event Interpreter (B8) - in progress (lane 6)
 ## Integration with A at 13:00 - not started
 ## Phase 4 - hero run, recordings, eval table (B10) - not started
