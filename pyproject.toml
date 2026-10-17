@@ -29,7 +29,7 @@ asyncio_mode = "auto"
 markers = ["live: calls Crusoe; run with GEMBA_LIVE=1"]
 
 [tool.setuptools]
-packages = ["floor", "data", "org", "engine", "llm", "learn", "eval", "console"]
+packages = ["floor", "data", "org", "engine", "llm", "learn", "eval", "console", "scenarios"]
 py-modules = ["contracts"]
 
 [build-system]

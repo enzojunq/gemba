@@ -131,7 +131,7 @@ class Accept(BaseModel):
 
 
 LEVER_HELP: dict[str, str] = {
-    "reslot_tonight": '{"kind":"reslot_tonight","n_moves":<n legs>,"order":"value|zone|family","include_zones":[<zone 1-6>],"exclude_zones":[<zone 1-6>]}',
+    "reslot_tonight": '{"kind":"reslot_tonight","n_moves":<n legs>,"order":"value|zone|family","include_zones":[<Pick Module zone 1-6>],"exclude_zones":[<Pick Module zone 1-6>]}  (zones are the 6 Pick Module zones, NOT aisle numbers 1-28; to keep moves out of a damaged aisle, Safety uses close_aisle)',
     "pause_reslot": '{"kind":"pause_reslot","days":<days>}',
     "labor_allocate": '{"kind":"labor_allocate","shift":"day|swing|night","pool":"pm|forklift|pallet|replen|consolidation|loading|night_move|temp","headcount":<headcount, absolute people on that shift/pool (not a delta)>}',
     "overtime": '{"kind":"overtime","shift":"day|swing|night","pool":"pm|forklift|...","hours":<hours>}',
@@ -247,6 +247,21 @@ class OrgPolicy:
         self.llm = llm
         if getattr(llm, "on_call", "absent") is None:  # a real client without a sink: log to llm_calls
             llm.on_call = self._on_call
+        elif callable(getattr(llm, "on_call", None)) and getattr(llm.on_call, "__self__", None) is not self:
+            # A client built with on_call=store.write_llm_call (eval/gate/retro CLIs, engine/run.py):
+            # stamp the policy's current day on rows that lack one, so `llm_calls.day` is not NULL.
+            # The base sink is kept so a client shared by several policies is not wrapped repeatedly.
+            base = getattr(llm.on_call, "_gemba_base", llm.on_call)
+
+            def _stamped(row, _base=base):
+                if isinstance(row, dict) and row.get("day") is None:
+                    row = {**row, "day": self._day}
+                return _base(row)
+            _stamped._gemba_base = base
+            try:
+                llm.on_call = _stamped
+            except Exception:  # noqa: BLE001 - read-only attribute: leave it
+                pass
         self.roles = roles if roles is not None else load_roles()
         self.playbook_rules = list(playbook_rules or [])
         self.seed = seed
