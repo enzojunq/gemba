@@ -218,7 +218,9 @@ A builds the HTTP endpoints from section 14 on top of these plus direct reads of
 | 14:50–15:30 | calibration polish, stretch (Scenario Designer) | — | retro, verification forks, test gate | v1 produced, gate recorded |
 | 15:30 | **decision gate** together | | | |
 
-## 11. Open points to settle at the 11:45 review
-- `EVENT_ARGS` keys per event kind (A proposes in `contracts.py`).
-- `Kpis` units: percentages as 0–100 (`on_time_pct`, `mispick_rate` in %) or fractions. **Default: 0–100 everywhere, matching the profile targets.**
+## 11. Resolved at the contract review (see `contracts.py`)
+- `EVENT_ARGS` keys per event kind are in `contracts.py`. B drafted them from spec 9.5/9.4; **A confirms or amends in the review** (the ones B chose without a spec signature: `staging_congestion.occupancy`, `director_escalation.metric`, `replen_alert.stockout_pct`, `absenteeism.pool/pct/days`).
+- Units: percentages are 0–100 (`on_time_pct`, `mispick_rate`, `reslot_progress_pct`, `staging_occupancy_max`). **Exception:** `pm_peak_zone_load` and `safety_risk_max` are ratios (1.0 = at capacity / at the safe limit), matching the profile hard limits 1.10 and 1.0.
+- `DoneCheck.metric` is a KPI name or one of `DERIVED_METRICS` (`score`, `lph_lift_pct`, `expected_near_misses`), computed by B's verifier. The twin never produces derived metrics.
+- A multi-day event is delivered to `step_day` once, on its start day; the twin holds the effect for its duration.
 - Days are integers 1–90; hours 0–23; the night belongs to the day it starts on.
