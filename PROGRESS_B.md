@@ -31,8 +31,38 @@ One section per phase: what was built, how it is tested, what is pending. Update
 - Zero delta → 0; +5 on-time → +0.35; clipping at ±1; mis-pick penalty sign; relative lph/labor-cost scales; progress independent of REF; weight validation; both profiles load; aggregation rules; feasibility breach amounts; `least_bad`.
 - Template thresholds sit inside their bounds, include derived metrics, every metric is a KPI name or derived.
 
-### B2 LLM client + cache (lane 2) · running
-### B3 run store + B4 baselines/StubTwin (lane 1) · running
+### B2 LLM client, cache, prompt builder, smoke test · done 12:40
+**Built**
+- `llm/client.py`: OpenAI-compatible client for the three Nemotron tiers (ids from `.env`), strict `json_schema` output with `json_object` → text fallbacks remembered per model, one validation retry then a caller-supplied safe default logged as `llm_fallback`, Nemotron reasoning toggle (`chat_template_kwargs.enable_thinking`), cost + cached-token accounting, `on_call` sink for the run store.
+- `llm/cache.py`: append-only JSONL (`recordings/llm_cache.jsonl`, overridable) keyed by sha256(model, messages, schema, temperature, reasoning). Hits skip the network, cost $0.
+- `llm/prompt.py`: `build_messages(role_prompt, playbook_rules, board_snapshot, task)` in the fixed KV-cache order.
+- `llm/smoke.py`: the phase-0 gate. **Live Crusoe results:** Super `NVIDIA-Nemotron-3-Super-120B-A12B` 1.7 s, Nano `Nemotron-3-Nano-30B-A3B` 0.26 s, both in strict `json_schema` mode; repeat call from cache at $0. Reasoning on Super: 1.5 s vs 0.5 s off; thinking returns in `reasoning_content`, counts against `max_tokens`.
+- Spec §12 corrections found live: Nano id differs from the spec's Omni id (price may differ); Super id is the capitalised form; Super price still a placeholder.
+
+**Tests** — `tests/test_llm.py`, 8 tests (fake OpenAI client, no network)
+- Cache hit on identical call; key changes with schema; validation retry path; fallback path; message order fixed; `<think>` stripping; `ModelNotConfigured` on an empty tier.
+
+**Pending**
+- `MODEL_ULTRA` in `.env`, then re-run `uv run python -m llm.smoke` for the Ultra latency gate (20 s) and the reasoning call.
+- Confirm Super/Nano prices in the Crusoe console.
+
+### B3 run store + B4 baselines and StubTwin · done 12:55
+**Built**
+- `engine/store.py`: `RunStore` over SQLAlchemy Core + SQLite (WAL so the console can read while the engine writes). All spec §8.2 tables + `inbox`, `snapshot_path`, and a few additive nullable columns (listed in `CONTRACT.md` §7). **Cascade edges are automatic**: any insert with `caused_by` writes a `cascade_edges` row with typed node ids. `write_day` is one transaction per simulated day; small writers (`write_meeting`, `write_utterance`, `write_option`, `write_evidence`, `write_hire`, `write_llm_call`, …) take an optional `conn` to join a transaction or commit alone so meeting rows stream live. `copy_run_prefix` copies rows with day < fork day and rewrites KPI node ids to the child run. `cascade(run_id, node, depth)` walks both directions.
+- `engine/stub_twin.py`: `StubTwin` implementing `contracts.FloorTwin`, deterministic per `scenario.seed`, picklable state, honours every lever in `view()`, physical cap 280 legs/night, rejects aisle > 28 / zone > 6. Consequences C1, C2, C3, C6 with correct `caused_by` attribution (C2 → the moving decision; C6 → the KPI node). Calibrated so 280 moves/night trips C2, 200 does not, and `protect KEY1` prevents it.
+- `eval/baselines.py`: `DoNothing`, `NaiveBigBang` (1200 moves + 8 temps on the first two days), `StaticRules` (200/night, pause on event days). `eval.POLICIES` registry.
+
+**Tests** — `tests/test_store.py` (7), `tests/test_stub_twin.py` (9), `tests/test_baselines.py` (4)
+- Schema creates; `write_day` atomic (exception mid-write persists nothing); caused_by → cascade edge with typed ids; `copy_run_prefix` boundary; inbox push/pop; `write_llm_call` accepts the client's dict.
+- StubTwin is a `FloorTwin`; determinism; pickle round trip; `close_aisle` visible; rejection for aisle 99; C2 fires with `dec:` cause; `whatif` never touches `actual_demand`.
+- StaticRules pauses on event days, 200 otherwise; all three are `DecisionPolicy`; levers carry decision ids.
+
+**Flags for A / the spec**
+- **C6 threshold:** spec 9.4 escalates on on-time `< profile target` (97) for 2 days, but 9.3a calibrates normal days at 94–97%, so the Director would be escalated almost daily. The stub uses target − 2 (95), same slack as the daily done-check. Recommend the real twin and spec 9.4 adopt `target − 2`.
+- Store columns beyond spec 8.2 (additive, nullable) are listed in `CONTRACT.md` §7.
+
+### B7 roles, prompts, authority (lane 4) · running
+### B5 engine day loop, forks, drift, verifier runner, engine API (lane 5) · running
 
 ## Phase 2 — engine day loop, forks, engine API, verifier runner, drift (B5, B9) · not started
 ## Phase 3 — org: roles, prompts, authority, standup, hiring, Event Interpreter (B7, B8) · not started

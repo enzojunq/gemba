@@ -183,8 +183,9 @@ for day in scenario.day_range:
 
 ## 7. Run store (`runs.db`): B writes, A's console reads
 
-- Schema: spec section 8.2 exactly, plus `day_results.snapshot_path` and one new table:
+- Schema: spec section 8.2, plus `day_results.snapshot_path` and one new table:
   `inbox(run_id, msg_id, day_hint, text, received_at, consumed_day NULL)`.
+  Additive nullable columns (all written by B, safe for the console to ignore): `day_results.violations` (JSON list), `decisions.rejections` (JSON list of `LeverRejection`), `cascade_edges.day`, `llm_calls.day`, `llm_calls.kind` (`llm_call|llm_fallback`), `llm_calls.fallback_used`, `llm_calls.mode`. `cascade_edges.kind` is the source/row type: `scripted|inbox|consequence|decision|meeting|constraint`. SQLite runs in WAL mode so the console can read while the engine writes.
 - B commits **each simulated day's rows in one transaction** at the end of that day. The console tails `runs.db` by `(run_id, day)` and `(meeting_id, seq)`, and turns new rows into SSE. No other channel between the engine and the console.
 - The console **writes only** `inbox` rows. The engine consumes them at the start of the next simulated day and sets `consumed_day`.
 - `utterances.kind` ∈ `proposal | position | veto | lock | question | decision`. The meeting-room UI renders from `meetings`, `utterances`, `options`, `decisions`, `hires`.
