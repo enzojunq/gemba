@@ -1,4 +1,4 @@
-# Default held-out month (spec 9.5). B drafted; A owns scenarios/ and may amend.
+# Default held-out month (spec 9.5). Seed 1, days 61-90.
 id: reslot_default
 seed: 1
 days: [61, 90]
@@ -6,8 +6,8 @@ events:
   - {kind: labor_shortage, day: 63, args: {pool: forklift, pct: 20, days: 2}}
   - {kind: rack_damage, day: 66, args: {aisle: 7, days: 3}}
   - {kind: demand_surge, day: 69, args: {family: seasonal, factor: 3, days: 5}}
-  - {kind: key_customer_week, day: 72, args: {customer: C001, days: 5}}   # C001 = the key customer in data/gen.py
-  - {kind: pm_zone_down, day: 75, args: {zone: 2, hours: 4}}
+  - {kind: key_customer_week, day: 72, args: {customer: C001, days: 5}}
+  - {kind: pm_zone_down, day: 75, hour: 8, args: {zone: 2, hours: 4}}
   - {kind: leadership_visit, day: 78, args: {no_moves_in_aisles: [10, 11, 12, 13, 14]}}
   - {kind: wms_sync_delay, day: 82, args: {days: 2}}
   - {kind: returns_spike, day: 86, args: {pct: 15, days: 2}}
