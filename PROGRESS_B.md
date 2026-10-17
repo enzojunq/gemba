@@ -123,5 +123,33 @@ One section per phase: what was built, how it is tested, what is pending. Update
 - Decisions: reslot 200 on quiet days; pause on the labor shortage (Megan, then Dana on the escalation); `labor_allocate` 12 forklifts to swing on day 65; `close_aisle(7, 3d)` on the rack damage; `protect KEY1` for the key-customer week. Every rationale cites the option score and KPIs.
 - Daily on-time check failed every day: the stub's baseline on-time is 95.5 against a 97 target, so this is stub calibration. The real twin's calibration target (94-97 on normal days) means the daily check threshold (target - 2 = 95) is where the org will actually be judged.
 ## Integration with A at 13:00 - not started
-## Phase 4 - hero run, recordings, eval table (B10) - not started
-## Phase 5 - retro coach, playbook, gate (B11) - not started
+## Phase 4 - eval harness, report, train/test scenarios (B10) - done 12:50 (hero run waits for the real twin)
+
+**Built**
+- `eval/run_eval.py`: `run_contender` / `evaluate` over (scenario, contender, seed). Do-nothing always runs first per scenario+seed because it is the scoring REF; static always runs so the "beats static" column exists; crew runs (`crew` = org with playbook v0, `crew_vN` = org with that playbook's rules) go through a thread pool capped at `--parallel`. Writes `eval_results`. CLI: `python -m eval.run_eval --scenario --profile --contenders --seeds [--days] [--parallel] [--out]`; `make baselines` is LLM-free.
+- `eval/report.py`: Markdown table per scenario and overall with the spec 15 columns (score, score_vs_static, lph_lift_pct, on_time, mispick, violations, near_misses, overtime, progress, llm_usd, meetings_held, hires), best value bold, every metric reported even where a baseline wins; `gate_summary` implements the 13.2 gate rule.
+- `scenarios/train_1..3.yaml` (seeds 11-13) and `test_1..3.yaml` (seeds 21-23): 10-day windows, different event mixes and timings; `test_1` has `wms_sync_delay` and `test_3` has `forklift_breakdown`, neither seen in training.
+
+**Tests** - `tests/test_eval.py` (6): all six scenarios validate; unseen kinds in test; three baselines on the stub produce rows with every metric, do-nothing scores ~0, static's `score_vs_static` is 0; rows land in `eval_results`; table bolds; gate rule; CLI prints.
+
+**Measured (stub, 30 days, seed 1):** do_nothing 0.000 / big_bang -0.002 (13 violations) / static 0.033 (progress 100, 39 violations). Stub numbers.
+
+**Pending:** the hero run and `recordings/hero.db` need the real twin; the eval table with `crew` is a live run (about $0.22 per 30 days).
+
+## Phase 5 - retro coach, playbook, gate (B11) - done 12:55
+
+**Built**
+- `learn/playbook.py`: `load_rules` / `save_rules` on the `playbook_rules` table (v0 = no rules; a candidate version loads its candidate rows until promoted), `merge` (cap 12, duplicates by role + tag overlap + advice similarity keep the larger score_delta, rules that never fired are dropped), `tags_for_day` with the same tag vocabulary the standup uses (event kinds, bare KPI names, drift kinds), `fired_counts` from the logged prompts.
+- `learn/retro.py`: spec 13.2 verbatim. `regret_days` (largest scorecard drop vs the do-nothing REF day, plus failed daily checks) -> `trace` through `cascade_edges` back to the originating `dec:` node (falls back to the next consequence events, then the latest decision with levers) -> `coach` (reasoning on; `CoachProposal(alternative_levers, lesson, why)`; fallback pause + generic lesson) -> `verify` by `fork_run` at the decision's day with the alternative forced, trimmed to `--horizon`, accepted iff score over the remaining days improves and hard-limit breaches do not increase -> candidate rules saved under the next version. One fork per originating decision. CLI `python -m learn.retro --train train_1,train_2,train_3 --version v0 --horizon 5 --max-regret-days 2` (`--playbook` alias for the Makefile).
+- `learn/gate.py`: runs `crew` (v0) and `crew_vN` on the test scenarios via `evaluate`, applies `gate_summary`, promotes candidates to active or marks them rejected, records an `eval_results` row with contender "gate". CLI `python -m learn.gate --test test_1,test_2,test_3 --from v0 --to v1`.
+- Engine: `fork_run(..., horizon=, policy_kwargs=)` so org forks reuse the retro's LLM, store, profile and rules. Store: `playbook_rows`, `replace_playbook_rules`, `set_playbook_status`.
+
+**Tests** - `tests/test_playbook.py` (9), `tests/test_retro.py` (9) - suite total 170 + 1 live
+- Merge cap and duplicate handling; v0 empty; save/load; tag vocabulary.
+- NaiveBigBang parent on the stub (days 61-66) -> regret on day 62 -> trace to `dec:...-d61` -> fake coach proposes `pause_reslot(2)` -> fork at day 61 (3-day horizon, `parent_run_id` set) scores higher -> lesson accepted, candidate row under v1 with normalised tags. A "push harder" proposal is rejected and writes nothing. Coach fallback path. Gate promoted / not promoted / rejected statuses (with `evaluate` stubbed).
+
+**Cost estimate for the real retro (3 train runs, horizon 5, 2 regret days each):** about 125-200 LLM calls plus about 150 for the three 10-day train runs; well under $1.
+
+**Known:** the engine writes `caused_by` edges out of `kpi:` nodes (C6) but nothing points into them, so the trace from a regret day's KPI node relies on the fallbacks. Fine for the demo; a `day_results -> kpi` edge would make it exact.
+
+## Integration with A - waiting for `floor/twin.py` (data lane landed; `inputs.db` generated and verified 12:45)

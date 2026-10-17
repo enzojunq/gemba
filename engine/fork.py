@@ -77,13 +77,22 @@ def prepare_fork(parent_run_id: str, day: int, levers: list = (), constraints: l
 def fork_run(parent_run_id: str, day: int, levers: list = (), constraints: list = (), *,
              twin: c.FloorTwin | None = None, profile: c.Profile | str | None = None,
              policy_name: str | None = None, store: RunStore | None = None,
-             snapshot_dir: str | None = None) -> str:
-    """Fork synchronously and return the child run id."""
+             snapshot_dir: str | None = None, horizon: int | None = None,
+             policy_kwargs: dict | None = None) -> str:
+    """Fork synchronously and return the child run id.
+
+    `horizon` (added for learn/retro): simulate only days `day .. day + horizon - 1` instead of
+    the parent's remaining range. `policy_kwargs` are passed to `make_policy` (e.g. `llm`,
+    `store`, `profile`, `playbook_rules` for "org"; baselines ignore them)."""
     store = store or RunStore()
     store.create_schema()
     child, spec, scenario, prof, policy_name = prepare_fork(
         parent_run_id, day, levers, constraints, store=store, profile=profile, policy_name=policy_name)
-    run(scenario, prof, make_policy(policy_name, child), twin or make_twin(), mode="fork",
+    if horizon is not None:
+        if horizon < 1:
+            raise ValueError("horizon must be >= 1")
+        scenario = scenario.model_copy(update={"days": (scenario.days[0], min(scenario.days[1], day + horizon - 1))})
+    run(scenario, prof, make_policy(policy_name, child, **(policy_kwargs or {})), twin or make_twin(), mode="fork",
         playbook_version=store.get_run(child)["playbook_version"] or "v0", store=store, fork=spec,
         snapshot_dir=snapshot_dir)
     return child

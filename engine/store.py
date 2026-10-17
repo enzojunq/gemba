@@ -526,3 +526,38 @@ def _update_option(self: RunStore, run_id: str, option_id: str, conn: Connection
 
 
 RunStore.update_option = _update_option
+
+
+# --- added by learn lane (learn/playbook.py, learn/gate.py) --------------------------------
+def _playbook_rows(self: RunStore, version: str | None = None) -> list[dict]:
+    """`playbook_rules` rows (JSON decoded), optionally for one version, ordered by rule_id."""
+    stmt = select(playbook_rules).order_by(playbook_rules.c.version, playbook_rules.c.rule_id)
+    if version is not None:
+        stmt = stmt.where(playbook_rules.c.version == version)
+    return self._all(stmt)
+
+
+def _replace_playbook_rules(self: RunStore, version: str, rows: list[dict]) -> None:
+    """Replace every `playbook_rules` row of `version` with `rows` (one transaction)."""
+    from sqlalchemy import delete
+    cols = set(playbook_rules.c.keys())
+    with self.engine.begin() as conn:
+        conn.execute(delete(playbook_rules).where(playbook_rules.c.version == version))
+        if rows:
+            conn.execute(insert(playbook_rules), [
+                {k: (dumps(v) if k in JSON_COLS else v) for k, v in dict(r, version=version).items() if k in cols}
+                for r in rows])
+
+
+def _set_playbook_status(self: RunStore, version: str, status: str, from_status: str | None = None) -> int:
+    """Set `status` on the rules of `version` (only those currently `from_status` if given)."""
+    stmt = update(playbook_rules).where(playbook_rules.c.version == version)
+    if from_status is not None:
+        stmt = stmt.where(playbook_rules.c.status == from_status)
+    with self.engine.begin() as conn:
+        return conn.execute(stmt.values(status=status)).rowcount
+
+
+RunStore.playbook_rows = _playbook_rows
+RunStore.replace_playbook_rules = _replace_playbook_rules
+RunStore.set_playbook_status = _set_playbook_status
