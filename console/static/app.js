@@ -223,7 +223,8 @@ function timelineSub(day) {
   const failed = (run.days.find((d) => d.day === day) || {}).checks_failed || [];
   const narrow = window.innerWidth < 1300;
   $("#timeline-sub").textContent = `Day ${day} · day ${day - first + 1} of ${last - first + 1} · ${sofar} event${sofar === 1 ? "" : "s"} so far` +
-    (next ? ` · next: ${narrow ? next.label : (next.plain || next.label)} (day ${next.day})` : " · no more scheduled events") +
+    (next ? ` · next: ${narrow ? next.label : (next.plain || next.label)} (day ${next.day})`
+          : (run.status === "running" || run.status === "queued") ? " · more events appear as days commit" : " · no more scheduled events") +
     (failed.length ? ` · ${failed.length} KPI${failed.length > 1 ? "s" : ""} off target today` : "");
 }
 
