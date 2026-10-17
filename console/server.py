@@ -728,6 +728,14 @@ def learning() -> dict:
     if gates:
         g = dict(gates[-1]["metrics"])
         g.setdefault("rule", "spec 13.2: mean test score up and violations not up")
+        for a, b in (("mean_score_v0", "mean_score_from"), ("mean_score_v1", "mean_score_to"),
+                     ("violations_v0", "violations_from"), ("violations_v1", "violations_to")):
+            if g.get(a) is None and g.get(b) is not None:
+                g[a] = g[b]
+        if g.get("promoted") is None:
+            g["promoted"] = g.get("improved")
+        # a verdict exists when `promoted` is decided; `reason` is then its explanation, not a refusal
+        g["no_verdict"] = g.get("promoted") is None or bool((g.get("fallbacks_from") or 0) + (g.get("fallbacks_to") or 0))
         gate = g
     return {"rules": rules, "scenarios": scen, "gate": gate,
             "rules_rule": "retro: the fork of the regret day must beat the parent (delta > 0; later runs: > 0.01, no LLM fallbacks)"}

@@ -56,7 +56,7 @@ export class Learning {
     const n = j.rules.filter((r) => r.status !== "rejected").length;
     const { s0, s1 } = this.means(j);
     const fb = g ? (g.fallbacks_from || 0) + (g.fallbacks_to || 0) : 0;
-    if (g && (g.reason || fb)) {
+    if (g && g.no_verdict) {
       return { kind: "none", html: `<b>No verdict from the gate.</b> ${esc(g.reason || `${fb} LLM fallbacks in the test runs`)}: the rule gives no verdict when either side fell back, so the ${n} lesson${n === 1 ? "" : "s"} stay candidates.` };
     }
     if (s0 == null || s1 == null) {
@@ -67,7 +67,7 @@ export class Learning {
     const viol = g && g.violations_v0 != null ? ` · rule breaches per run ${(+g.violations_v0).toFixed(1)} → ${(+g.violations_v1).toFixed(1)}` : "";
     return won
       ? { kind: "won", html: `<b>Promoted: version 1 beats version 0 on ${sc} scenario${sc === 1 ? "" : "s"} it never trained on.</b> Mean score ${sgn(s0)} → ${sgn(s1)}${viol}. The ${n} lessons enter the playbook.` }
-      : { kind: "lost", html: `<b>Not promoted: version 1 scored below version 0 on the held-out scenario${sc === 1 ? "" : "s"}</b> (${sgn(s0)} → ${sgn(s1)}${viol}). The lessons helped on the days they came from, not on a month the org had never seen, so they stay out of the playbook. That is the gate doing its job.` };
+      : { kind: "lost", html: `<b>Not promoted: version 1 scored below version 0 on the held-out scenario${sc === 1 ? "" : "s"}</b> (${sgn(s0)} → ${sgn(s1)}${viol}). The lessons helped on the days they came from, not on a month the org had never seen, so they stay out of the playbook. That is the gate doing its job.${g && g.reason ? ` <span class="learn-note">Gate note: ${esc(g.reason)}</span>` : ""}` };
   }
 
   chart(j) {
