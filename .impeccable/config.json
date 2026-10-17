@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "layout-transition",
+        "value": "*",
+        "files": [
+          "console/static/styles.css"
+        ],
+        "createdAt": "2026-10-17T19:56:57.907Z",
+        "reason": "team lead: styles.css L237 animates SVG stroke/stroke-width on a single seat ring circle, a paint-only property with no layout; width transitions were already replaced by transform"
+      }
+    ]
+  }
+}

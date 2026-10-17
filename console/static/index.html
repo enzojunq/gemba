@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemba console</title>
+<meta name="description" content="Watch an agent org run a warehouse reslot: the floor, the standup, the decisions and their cascades.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Schibsted+Grotesk:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230c0f13'/%3E%3Crect x='7' y='8' width='4' height='16' rx='1' fill='%23f2a93b'/%3E%3Crect x='14' y='8' width='4' height='16' rx='1' fill='%23f2a93b' opacity='.6'/%3E%3Crect x='21' y='8' width='4' height='16' rx='1' fill='%23f2a93b' opacity='.35'/%3E%3C/svg%3E">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5.5v13l11-6.5z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></symbol>
+    <symbol id="i-fork" viewBox="0 0 24 24"><path d="M7 4v6c0 3 2 4 5 4s5 1 5 4v2M7 20v-6M17 4v4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><circle cx="7" cy="4" r="1.6" fill="currentColor"/><circle cx="17" cy="4" r="1.6" fill="currentColor"/><circle cx="7" cy="20" r="1.6" fill="currentColor"/><circle cx="17" cy="20" r="1.6" fill="currentColor"/></symbol>
+    <symbol id="i-compare" viewBox="0 0 24 24"><path d="M4 5h6v14H4zM14 5h6v14h-6z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M6 12h2M16 10h2M16 14h2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></symbol>
+    <symbol id="i-board" viewBox="0 0 24 24"><path d="M6 5h12v15H6z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M9 3.5h6v3H9zM9 10h6M9 13.5h6M9 17h4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" fill="none" stroke="currentColor" stroke-width="1.75"/><circle cx="12" cy="15.5" r="1.4" fill="currentColor"/></symbol>
+    <symbol id="i-veto" viewBox="0 0 24 24"><path d="M8 3h8l5 5v8l-5 5H8l-5-5V8z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12L20 5l-4 14-4-5zM12 14l8-9" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L5 13.5h6L10 21l9-11h-6z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></symbol>
+    <symbol id="i-cascade" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="6" r="2" fill="currentColor"/><circle cx="12" cy="18" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/><path d="M7 11l3-4M7 13l3 4M14 7l3 4M14 17l3-4" stroke="currentColor" stroke-width="1.5" fill="none"/></symbol>
+    <symbol id="i-badge" viewBox="0 0 24 24"><path d="M12 3l2.6 2.2 3.4-.4 1 3.3 3 1.7-1.3 3.2 1.3 3.2-3 1.7-1 3.3-3.4-.4L12 21l-2.6-2.2-3.4.4-1-3.3-3-1.7 1.3-3.2L2 7.8l3-1.7 1-3.3 3.4.4z" fill="currentColor"/><path d="M8.5 12l2.5 2.5 4.5-5" fill="none" stroke="var(--bg)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<header class="top" id="top">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="brand-name">Gemba</span>
+  </div>
+  <div class="run-facts" id="run-facts">
+    <span class="fact"><span class="fact-k">scenario</span><span class="fact-v" id="f-scenario">—</span></span>
+    <span class="fact"><span class="fact-k">profile</span><span class="fact-v" id="f-profile">—</span></span>
+    <span class="fact"><span class="fact-k">playbook</span><span class="fact-v" id="f-playbook">—</span></span>
+    <span class="fact fact-lineage" id="f-lineage" hidden><svg class="ic"><use href="#i-fork"/></svg><span id="f-lineage-text"></span></span>
+    <span class="pill pill-status" id="f-status">—</span>
+    <span class="pill pill-recorded" id="f-recorded" hidden title="This run was recorded earlier and is being replayed from recordings/">Recorded run</span>
+  </div>
+  <div class="clock" id="clock" aria-live="off">
+    <span class="clock-day" id="clock-day">Day —</span>
+    <span class="clock-time" id="clock-time">--:--</span>
+    <span class="clock-phase" id="clock-phase"></span>
+  </div>
+  <div class="controls">
+    <button class="btn btn-icon" id="btn-play" aria-label="Play" title="Play / pause (space)"><svg class="ic"><use href="#i-play"/></svg></button>
+    <div class="seg" role="group" aria-label="Replay speed" id="speed">
+      <button class="seg-b" data-speed="1">1×</button>
+      <button class="seg-b is-on" data-speed="4">4×</button>
+      <button class="seg-b" data-speed="16">16×</button>
+    </div>
+    <button class="btn btn-accent" id="btn-fork"><svg class="ic"><use href="#i-fork"/></svg>Fork</button>
+    <button class="btn" id="btn-compare"><svg class="ic"><use href="#i-compare"/></svg>Compare</button>
+    <button class="btn" id="btn-board"><svg class="ic"><use href="#i-board"/></svg>Board</button>
+    <button class="btn btn-icon" id="btn-theme" aria-label="Toggle light and dark theme"><svg class="ic ic-sun"><use href="#i-sun"/></svg><svg class="ic ic-moon"><use href="#i-moon"/></svg></button>
+  </div>
+</header>
+
+<main class="stage" id="stage">
+  <section class="floor" id="floor-pane" aria-label="Warehouse floor">
+    <div class="pane-head">
+      <h2>Floor</h2>
+      <span class="pane-sub" id="floor-sub">28 aisles · Pick Module · consolidator · dock</span>
+      <span class="floor-legend" aria-hidden="true">
+        <span>aisles:</span> <i class="lg lg-cool"></i>idle <i class="lg lg-warm"></i>busy <i class="lg lg-hot"></i>overloaded <i class="lg lg-hatch"></i>closed
+        <span class="lg-sep">·</span> <i class="lg lg-door"></i>door lit = truck loading <span class="lg-sep">·</span> staging = buffer for slot moves
+      </span>
+    </div>
+    <canvas id="floor" aria-label="Animated plan view of the warehouse floor for the current hour"></canvas>
+    <aside class="drawer drawer-cascade" id="cascade" hidden aria-label="Cascade trace">
+      <div class="drawer-head">
+        <h3><svg class="ic"><use href="#i-cascade"/></svg>Cascade trace</h3>
+        <span class="drawer-sub" id="cascade-sub"></span>
+        <button class="btn btn-icon btn-ghost" id="cascade-close" aria-label="Close cascade trace"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <p class="cascade-sentence" id="cascade-sentence"></p>
+      <div class="cascade-body" id="cascade-body"></div>
+    </aside>
+  </section>
+
+  <section class="room" id="room-pane" aria-label="Meeting room">
+    <div class="pane-head">
+      <h2>Meeting room</h2>
+      <span class="pane-sub" id="room-sub">—</span>
+    </div>
+    <div class="room-body" id="room"></div>
+    <aside class="drawer drawer-board" id="board" hidden aria-label="Board">
+      <div class="drawer-head">
+        <h3><svg class="ic"><use href="#i-board"/></svg>Board</h3>
+        <button class="btn btn-icon btn-ghost" id="board-close" aria-label="Close board"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="board-body" id="board-body"></div>
+    </aside>
+  </section>
+
+  <section class="timeline" id="timeline-pane" aria-label="Timeline">
+    <div class="pane-head">
+      <h2>Timeline</h2>
+      <span class="pane-sub" id="timeline-sub">days 61 – 90 · click a marker for its cascade, a day to jump</span>
+      <span class="tl-legend" aria-hidden="true"><i class="lg lg-evt"></i>event <i class="lg lg-evt lg-cons"></i>consequence <i class="lg lg-dec"></i>decision <i class="lg lg-mtg"></i>standup <i class="lg lg-fail"></i>target missed</span>
+    </div>
+    <div class="timeline-body" id="timeline"></div>
+  </section>
+
+  <section class="compare" id="compare-pane" hidden aria-label="Compare two runs">
+    <div class="compare-body" id="compare"></div>
+  </section>
+</main>
+
+<footer class="dock" id="dock">
+  <form class="inbox" id="inbox-form" autocomplete="off">
+    <label class="inbox-label" for="inbox-text"><svg class="ic"><use href="#i-bolt"/></svg>Inbox</label>
+    <input class="inbox-input" id="inbox-text" type="text" placeholder="Type a disruption in plain words, e.g. “Forklift 3 is down for the afternoon”" maxlength="280">
+    <button class="btn btn-accent" type="submit" id="inbox-send"><svg class="ic"><use href="#i-send"/></svg>Send</button>
+  </form>
+  <div class="inbox-pending" id="inbox-pending" aria-live="polite"></div>
+</footer>
+
+<dialog class="dlg" id="fork-dlg">
+  <form method="dialog" class="dlg-form" id="fork-form">
+    <h3><svg class="ic"><use href="#i-fork"/></svg>Fork this run</h3>
+    <p class="dlg-lede">Replay the same world up to a day, change one decision, and watch the other future.</p>
+    <label class="field">
+      <span>Fork at day</span>
+      <input type="number" id="fork-day" min="61" max="90" value="69" required>
+    </label>
+    <fieldset class="presets" id="fork-presets">
+      <legend>Decision to try instead</legend>
+      <label class="preset"><input type="radio" name="preset" value="protect_pm" checked><span class="preset-t">Protect the Pick Module all week</span><span class="preset-d">No moves in any PM zone for 7 days</span></label>
+      <label class="preset"><input type="radio" name="preset" value="pause_3"><span class="preset-t">Pause the reslot 3 days</span><span class="preset-d">Zero legs for three nights</span></label>
+      <label class="preset"><input type="radio" name="preset" value="temps_6"><span class="preset-t">Hire 6 temps</span><span class="preset-d">Temp pool with a 5-day ramp, 10 days</span></label>
+    </fieldset>
+    <p class="dlg-err" id="fork-err" hidden></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="fork-cancel">Cancel</button>
+      <button type="submit" class="btn btn-accent" id="fork-go"><svg class="ic"><use href="#i-fork"/></svg>Fork and stream</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="dlg" id="compare-dlg">
+  <form method="dialog" class="dlg-form" id="compare-form">
+    <h3><svg class="ic"><use href="#i-compare"/></svg>Compare runs</h3>
+    <p class="dlg-lede">Two runs side by side: synced timelines, KPI deltas and the first decision that differs.</p>
+    <label class="field"><span>Run A</span><select id="cmp-a"></select></label>
+    <label class="field"><span>Run B</span><select id="cmp-b"></select></label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="compare-cancel">Cancel</button>
+      <button type="submit" class="btn btn-accent">Compare</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -9,3 +9,7 @@ __pycache__/
 .pytest_cache/
 .vscode/
 *.egg-info/
+.playwright-mcp/
+*.db-shm
+*.db-wal
+fixtures/*.db
