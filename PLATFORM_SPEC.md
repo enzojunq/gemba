@@ -52,7 +52,7 @@ Reslotting is the first "pack". The platform pattern (floor twin + org twin + ri
 | Live demo 20% | 2D animated floor, meeting room with characters, live fork, live inbox disruption, live role added from a config file. |
 | Future potential 15% | Wargaming for operations: any site, any operational change, any org chart. Copilot at the daily standup. |
 | Best use of Nemotron | Model tiering by role: Ultra for the chair, director and retro coach (reasoning on, 1M context reads the whole run), Super for stakeholders, Nano for analytics phrasing, event parsing and quiet-day fast path. Prompt layout designed for Crusoe's KV-cache. |
-| Best use of NemoClaw / OpenShell (stretch) | The org runtime runs inside an OpenShell sandbox: egress only to Crusoe and Neon, writes only to the run folder. Production argument: agents that make operational decisions need a blast-radius boundary. |
+| Best use of NemoClaw / OpenShell (stretch) | A Scenario Designer (an OpenClaw agent sandboxed by NemoClaw) is a meta-harness over Gemba: it turns plain-language requests into scenario files, starts runs through the console API and summarizes results. The sandbox limits it to Crusoe, Neon and the Gemba API, and it can never touch the floor except through Gemba's typed levers. Production argument: agents that make operational decisions need a blast-radius boundary. |
 
 Banned-list check: not a dashboard (the product is the agent org and its loop; the UI is a window onto it), not RAG (no vector store; playbook rules are selected by event tags), not Streamlit.
 
@@ -74,7 +74,7 @@ Banned-list check: not a dashboard (the product is the agent org and its loop; t
 11. Two company profiles compared on the same month.
 
 **Stretch (only if ahead at 15:00):**
-12. NemoClaw / OpenShell sandbox for the org runtime.
+12. Scenario Designer: an OpenClaw agent in a NemoClaw sandbox that writes `scenarios/*.yaml` from plain language and starts runs (section 16). Fallback: a "Describe a scenario" box in the console backed by Nano with the same scenario schema.
 13. Neon branch per fork.
 14. Add a role live from YAML during the demo (e.g., union rep who blocks overtime).
 15. Copilot mode reading a "today" partition.
@@ -116,6 +116,8 @@ Banned-list check: not a dashboard (the product is the agent org and its loop; t
           floor, meeting, timeline  baselines, seeds    playbook vN -> vN+1
           fork, compare, inbox      train/test split    verified by forking
 ```
+
+Harness view (use this framing in the pitch): the **org twin plus the run engine is the harness**. It builds each agent's context, decides who speaks, gives agents tools (what-ifs, queries), turns answers into typed levers, enforces authority and vetoes, and logs and caches every call. The **floor twin is the environment** the harness acts on: deterministic code with no LLM in it. The optional Scenario Designer (section 16) is a **meta-harness** one level up: it chooses what Gemba runs and reads the results, but never bypasses Gemba's levers.
 
 Process model: one Python process per run (async inside). The console server reads the run store and streams. Many runs can execute in parallel (eval, retro forks).
 
@@ -320,15 +322,15 @@ Performance target: `step_day` < 300 ms (vectorized per day, small hourly loop),
                     Dana, Plant Director  [Ultra]
                     owns company profile, escalations, overrides
                                |
-                    Maya, Reslotting Program Manager (chair)  [Ultra]
+                    Megan, Reslotting Program Manager (chair)  [Ultra]
                     runs standups, calls specialists, decides
          ______________________|_____________________________
         |                      |                             |
-  Raj, Ops Manager [Super]   Leo, Reslotting Engineer [Super]   Priya, Analytics [Nano + code]
+  Ryan, Ops Manager [Super]   Luke, Reslotting Engineer [Super]   Paige, Analytics [Nano + code]
   LPH, PM, consolidator      progress to target                 simulator, evidence, forecasts
 
-  On call (hired by Maya when a trigger fires; released when it clears):
-  Sam, Safety [Super]   Elena, Quality [Super]   Marcus, Shift Lead [Nano]   Tom, Replenishment [Nano]
+  On call (hired by Megan when a trigger fires; released when it clears):
+  Sam, Safety [Super]   Ellen, Quality [Super]   Marcus, Shift Lead [Nano]   Tom, Replenishment [Nano]
 
   Meta agents (not in the org chart):
   Event Interpreter [Nano]: turns inbox text into typed events/constraints
@@ -340,7 +342,7 @@ Performance target: `step_day` < 300 ms (vectorized per day, small hourly loop),
 
 ```yaml
 id: ops_manager
-name: Raj
+name: Ryan
 title: Ops Manager
 model_tier: super          # ultra | super | nano
 character: >
@@ -360,12 +362,12 @@ Roster (defaults):
 | Role | Model | Owns | Power | Attends | Hire triggers |
 |---|---|---|---|---|---|
 | Dana, Plant Director | Ultra | Company profile, revenue, customer promises | director: change profile, override locks, approve temps and overtime over budget, break ties | Escalations only | `director_escalation`, chair escalates, veto deadlock |
-| Maya, Program Manager | Ultra | Schedule, done-checks, meeting | chair: sets agenda, calls specialists, decides among feasible options | Always | — |
-| Raj, Ops Manager | Super | LPH, PM load, consolidator | vote | Always | — |
-| Leo, Reslotting Engineer | Super | Reslot progress, value per move | vote | Always | — |
-| Priya, Analytics | Nano + code | Evidence, forecasts | none (only role that runs the simulator) | Always | — |
+| Megan, Program Manager | Ultra | Schedule, done-checks, meeting | chair: sets agenda, calls specialists, decides among feasible options | Always | — |
+| Ryan, Ops Manager | Super | LPH, PM load, consolidator | vote | Always | — |
+| Luke, Reslotting Engineer | Super | Reslot progress, value per move | vote | Always | — |
+| Paige, Analytics | Nano + code | Evidence, forecasts | none (only role that runs the simulator) | Always | — |
 | Sam, Safety | Super | Safety risk, near-misses, closures | **veto**; can issue `close_aisle` unilaterally | On trigger | `rack_damage`, `safety_review`, risk index > 1.0, `forklift_breakdown` |
-| Elena, Quality | Super | On-time, mis-pick rate, key customers | **lock** (protect SKUs/customer up to 3 days alone, longer with chair) | On trigger | `customer_escalation`, `key_customer_week`, mis-pick > 0.6%, `wms_sync_delay` |
+| Ellen, Quality | Super | On-time, mis-pick rate, key customers | **lock** (protect SKUs/customer up to 3 days alone, longer with chair) | On trigger | `customer_escalation`, `key_customer_week`, mis-pick > 0.6%, `wms_sync_delay` |
 | Marcus, Shift Lead | Nano | Headcount, overtime, temps | **capacity truth** (sets available labor; can refuse overtime beyond policy) | On trigger | `labor_shortage`, `absenteeism`, overtime requested |
 | Tom, Replenishment | Nano | Replen trips, stockouts | vote | On trigger | `replen_alert`, `demand_surge` |
 
@@ -427,7 +429,7 @@ score = Σ_k w_k × clip( sign_k × (KPI_k − REF_k) / SCALE_k, −1, 1 )
                          else: code hires roles whose triggers fired; chair (Ultra) sets the agenda
       PROPOSE            Engineer proposes 1 option (levers); any attendee may add 1 alternative;
                          max 3 options
-      EVIDENCE (Priya)   whatif() for each option over 3 days on FORECAST demand -> evidence ids
+      EVIDENCE (Paige)   whatif() for each option over 3 days on FORECAST demand -> evidence ids
       POSITIONS          each attendee: support | oppose | amend, must cite an evidence id;
                          Safety veto check; Quality lock check; Shift Lead capacity check
       AMEND (max 1 round) amended options get new evidence
@@ -442,7 +444,7 @@ score = Σ_k w_k × clip( sign_k × (KPI_k − REF_k) / SCALE_k, −1, 1 )
 Message order in every LLM call (keeps Crusoe's KV cache warm): role prompt (static) → playbook rules for this role (changes per version) → board snapshot (changes per day) → task. Never reorder.
 
 **Quiet days and hiring are decided by code; the LLM only narrates.**
-- A day is **quiet** if there are no new or newly announced events, no pending consequences, no drift flags, no open inbox messages, and every yesterday KPI is within its target band. On a quiet day the standing plan continues (same reslot budget and settings) and one Nano call writes Maya's one-line standup note.
+- A day is **quiet** if there are no new or newly announced events, no pending consequences, no drift flags, no open inbox messages, and every yesterday KPI is within its target band. On a quiet day the standing plan continues (same reslot budget and settings) and one Nano call writes Megan's one-line standup note.
 - **Hire** a role when its trigger appears in today's events, newly announced events, or yesterday's KPIs (table in 10.2). **Release** it after 2 consecutive days with no trigger. Every hire and release is logged with its trigger.
 - Expect about 10–14 meeting days in a 30-day run.
 
@@ -571,7 +573,7 @@ A small chart: test-set scorecard for v0 vs v1 (and v2), plus violations and on-
 
 ## 14. Console (`console/`)
 
-FastAPI serves one page and streams with SSE. Endpoints: `GET /runs`, `GET /runs/{id}/stream?speed=`, `GET /runs/{id}/day/{d}`, `POST /runs/{id}/inbox`, `POST /runs/{id}/fork {day, levers}`, `GET /compare?a=&b=`, `GET /cascade/{run_id}/{node_id}`, `POST /runs {scenario, profile, playbook}`.
+FastAPI serves one page and streams with SSE. Endpoints: `GET /runs`, `GET /runs/{id}/stream?speed=`, `GET /runs/{id}/day/{d}`, `POST /runs/{id}/inbox`, `POST /runs/{id}/fork {day, levers}`, `GET /compare?a=&b=`, `GET /cascade/{run_id}/{node_id}`, `POST /runs {scenario, profile, playbook}`, `POST /scenarios` (validated scenario YAML, used by the Scenario Designer and the console box).
 
 Layout (one screen, light and dark):
 
@@ -608,16 +610,26 @@ Contenders on every scenario (3 seeds each where time allows):
 
 Report: profile scorecard, LPH lift, on-time, mis-pick rate, violations, near-misses, overtime, reslot progress, LLM cost, meetings held, hires. Report every metric, including ones where a baseline wins.
 
-## 16. Security and NemoClaw / OpenShell (stretch)
+## 16. Scenario Designer on NemoClaw / OpenShell (stretch)
 
-Production argument: agents that decide operational actions need a hard boundary. In Gemba they already can't touch the floor except through typed, authority-checked levers. OpenShell adds the runtime boundary:
-- Run the engine process inside an OpenShell sandbox via NemoClaw.
-- Network policy: egress allowlist = Crusoe inference host, Neon host. Everything else blocked.
-- Filesystem: writable only `/sandbox/runs`; inputs read-only.
+What it is: a meta-harness over Gemba. An OpenClaw agent runs inside a NemoClaw (OpenShell) sandbox. The user tells it in plain language what to rehearse ("test a peak week with 20% absences on nights"); it writes a scenario file, starts a run, waits, and explains what happened by reading the run store and cascade graph. Gemba itself stays a controlled harness: the designer can only change inputs (`scenarios/*.yaml`, profile, playbook choice), never decisions inside a run.
+
+Interface (all through the console API in section 14, no direct DB writes):
+- `POST /scenarios` with a scenario YAML, validated against the scenario schema (events must be known kinds, days inside 61–90, pools and aisles must exist). Invalid files are rejected with the validation error so the agent can fix them.
+- `POST /runs {scenario, profile, playbook}`, `POST /scenarios` (validated scenario YAML, used by the Scenario Designer and the console box). then `GET /runs/{id}/day/{d}` and `GET /cascade/{run_id}/{node_id}` to read results.
+- Give OpenClaw these as a small tool/skill file with the endpoint URL and the scenario schema.
+
+Sandbox policy:
+- Egress allowlist: Crusoe inference host, the Gemba console host. Nothing else.
+- Filesystem: writable only its own workspace; Gemba inputs read-only to it.
 - Credentials stay outside the sandbox (OpenShell injects at the boundary).
 - In copilot mode, write-back to a real WMS would go only to a `proposed_move_tasks` table that a human approves.
 
-Docs: [NemoClaw architecture](https://docs.nvidia.com/nemoclaw/latest/about/how-it-works.html). NemoClaw is built around agent runtimes (OpenClaw, Hermes, Deep Agents `dcode`); running our own Python engine inside may need the custom-endpoint or quickstart path. Time-box to 30 minutes; if it doesn't run, mention the design and skip.
+Fallback (build this first, it's 20 minutes): a "Describe a scenario" box in the console. Nano turns the text into a scenario YAML using the same schema and endpoint. The demo works the same; only the hosting story changes.
+
+Schedule: setup probe before 10:45 (section 18), wiring at 14:50–15:30 time-boxed to 40 minutes. If it doesn't run by then, demo the fallback and describe the design.
+
+Docs: [NemoClaw architecture](https://docs.nvidia.com/nemoclaw/latest/about/how-it-works.html). NemoClaw hosts agent runtimes (OpenClaw, Hermes, Deep Agents `dcode`); we use OpenClaw as the designer and keep the Gemba engine as an ordinary Python process outside the sandbox.
 
 ## 17. Copilot mode (future; demo via inbox)
 Same loop, different inputs: a nightly job loads yesterday's actuals into the input tables (`orders`, `order_lines`, completed moves, labor attendance), the engine runs one day ahead, and the morning brief plus recommended option lands in the console before the real standup. The engineer approves or edits; approved moves export to the WMS as tasks. Each day of actual-vs-predicted recalibrates the twin. For the hackathon, the inbox is the stand-in: a judge types "Aisle 12 closed, forklift hit the upright" and the org re-plans live.
@@ -697,16 +709,18 @@ Either way the same system is demoed; only the first 20 seconds of the pitch cha
 | Time | On screen | Say |
 |---|---|---|
 | 0:00–0:20 | Title, then the floor | "I was the analytics engineer on a warehouse reslot. The target layout was easy. Getting there while the warehouse kept shipping was not, and the decisions made in daily standups were the real driver. No simulator models those decisions." |
-| 0:20–0:50 | Run starts at day 61; standup streams; Maya calls in Sam after rack damage; Sam vetoes; floor shows aisle 7 hatched | "Gemba simulates the warehouse and the people who run it. Every claim cites a simulator run. Safety has a veto, Quality can lock customers, the director owns priorities." |
-| 0:50–1:20 | Cascade trace: aggressive night → learning dip → mis-picks → customer escalation → Elena locks SKUs → reslot slows | "Decisions cascade. That's what hardcoded simulations miss." |
+| 0:20–0:50 | Run starts at day 61; standup streams; Megan calls in Sam after rack damage; Sam vetoes; floor shows aisle 7 hatched | "Gemba simulates the warehouse and the people who run it. Every claim cites a simulator run. Safety has a veto, Quality can lock customers, the director owns priorities." |
+| 0:50–1:20 | Cascade trace: aggressive night → learning dip → mis-picks → customer escalation → Ellen locks SKUs → reslot slows | "Decisions cascade. That's what hardcoded simulations miss." |
 | 1:20–1:50 | Fork at day 69 with "protect the Pick Module"; compare view shows divergence | "Fork any day with a different decision and watch the other future." |
-| 1:50–2:20 | Judge types a disruption into the inbox; org re-plans live | "Any disruption, in plain words." |
+| 1:50–2:20 | Judge types a disruption into the inbox; org re-plans live. If the Scenario Designer works, the judge instead asks it for a new scenario and it starts the run | "Any disruption, in plain words." |
 | 2:20–2:45 | v0 vs v1 on unseen scenarios (or done-checks + drift if fallback), plus eval table | "After each run the org reviews its own worst cascades, proves a better move by forking, and keeps the lesson only if it wins on scenarios it has never seen." |
 | 2:45–3:00 | Platform slide | "Reslotting is the first pack. Swap the twin and the org chart and it rehearses any operational change. Wargaming for operations." |
 
 Backup: the hero run is recorded during the event with live Crusoe calls and committed as an SQLite export, so `make demo` replays it offline in the same console. If you use the replay on stage, say so ("this is the recorded run from 2 PM; here's the live fork"). Hiding it is an integrity risk.
 
 Lead with the agents (the meeting room and the decisions), not the console, so nobody reads it as a dashboard project.
+
+Explainer film (about 3 minutes, made before the event, figures illustrative): https://claude.ai/artifact/PDnNstug3PKZocwCLxPdxQ. It follows this calendar (rack damage on day 66, fork at day 69). Use it for the opening 20 seconds or as a backup if the live run fails. Shared as anyone-with-the-link.
 
 ## 23. Pitch lines and Q&A
 
@@ -716,6 +730,7 @@ Lead with the agents (the meeting room and the decisions), not the console, so n
 - "Is it realistic?" Synthetic data shaped on a real site, day-level and hourly approximations. We claim the mechanism and the comparisons, not real-world savings.
 - "Do agents predict what real people will do?" No. They rehearse plausible positions backed by numbers. It's stress-testing, not forecasting.
 - "Isn't the what-if cheating with future data?" No. What-ifs use a forecast from visible history and announced events. Only execution uses the actual held-out orders.
+- "Where's the harness?" The org twin is the harness: it builds each stakeholder's context, routes the meeting, gives tools, and enforces authority in code. The floor twin is the deterministic environment it acts on. The Scenario Designer on NemoClaw is a meta-harness above it that picks what to rehearse.
 - "What's recursive here?" The coach rewrites the org's playbook, verifies each lesson with a counterfactual fork, and the change is kept only if it improves unseen scenarios.
 
 ## 24. Risks and mitigations
@@ -752,7 +767,7 @@ Decisions we made, the alternatives, and why. Revisit only with new evidence.
 17. **Code decides quiet days, hiring and authority; LLMs argue and narrate.** Keeps runs cheap, deterministic and auditable.
 11. **Plain JS + Canvas UI, no framework.** No build step to break; AI agents write it quickly.
 12. **Primary track decided at 15:30 by evidence.** Version N+1 if the gate passes, else Done Means Done. Same system either way.
-13. **NemoClaw is stretch.** Real production value, but setup risk; not on the critical path.
+13. **NemoClaw is stretch, as a meta-harness.** OpenClaw in a NemoClaw sandbox designs scenarios and starts runs through the API; Gemba stays a controlled harness that the designer cannot bypass. Rejected: running the Gemba engine itself inside NemoClaw (custom runtime path, setup risk, no demo payoff). Nano console box is the fallback.
 14. **Characters have names and personalities.** Purely for readability and demo; behavior is driven by owned KPIs, powers and levers, not by personality text.
 
 Open questions to settle on the day (with defaults if nobody decides):
