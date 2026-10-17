@@ -99,6 +99,8 @@ def verify(db: str) -> list[Check]:
     n_under = int((cover < 1.0).sum())
     checks.append(Check("stale_layout: top-300 SKUs with < 1 day active cover", n_under, "20..60", 20 <= n_under <= 60))
 
+    trips = float((upd / cur.loc[upd.index, "active_capacity_units"]).sum())
+    checks.append(Check("stale_layout: implied replen trips/day (current, hist)", round(trips, 1), "<= 560 (pool ~576-640)", trips <= 560))
     # 5 tight PM
     zone = cur["active_loc"].map(_loc_zone)
     zl = v.groupby(zone.reindex(v.index)).sum() / ZONE_CAP_LINES_PER_DAY

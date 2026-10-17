@@ -45,6 +45,10 @@ ZIPF_S = 1.3
 PM_PEAK_TARGET = 1.2
 N_EXTRA_SWAPS = 150       # random current-vs-ideal swaps so the target differs in ~1,100 slots
 KEEP_TOLERANCE_M = 8
+CURRENT_COVER_DAYS = (3.0, 6.0)   # current layout: days of active cover per SKU (uniform)
+TARGET_COVER_DAYS = 3.0           # target layout: days of cover (2 would imply ~660 replen trips/day > pool)
+UNDERSIZED_COVER_DAYS = 0.4       # trap 4b: the 25 undersized fast SKUs
+CAP_FLOOR_UNITS = 20
 
 ROLES_PER_PICK_SHIFT = {"pm": 12, "forklift": 14, "replen": 4, "pallet": 3, "consolidation": 10, "loading": 6}
 NIGHT_MOVERS = 4
@@ -322,9 +326,10 @@ def finish_current(rng, loc, pm_skus, v_total, upd, undersized):
     for s, z in zip(pm_skus, zone):
         slot_used[z] += 1
         loc[s] = pm_loc(z, slot_used[z])
-    cover = rng.uniform(2.0, 4.0, size=N_SKU)
-    cap = np.maximum(10, np.ceil(cover * upd / 10) * 10).astype(np.int64)
-    cap[undersized] = np.maximum(1, np.floor(0.6 * upd[undersized])).astype(np.int64)
+    # 3-6 days of cover, floor 20 units: ~390 replen trips/day against a pool of ~576-640 (4 drivers x 16 h x 10/h).
+    cover = rng.uniform(CURRENT_COVER_DAYS[0], CURRENT_COVER_DAYS[1], size=N_SKU)
+    cap = np.maximum(CAP_FLOOR_UNITS, np.ceil(cover * upd / 10) * 10).astype(np.int64)
+    cap[undersized] = np.maximum(1, np.floor(UNDERSIZED_COVER_DAYS * upd[undersized])).astype(np.int64)
     reserve_slots = [aisle_loc(a, b, l) for a in range(1, N_AISLE + 1) for b in range(1, BAYS + 1) for l in (3, 4)]
     res_idx = rng.choice(len(reserve_slots), size=N_SKU, replace=False)
     reserve = [reserve_slots[i] for i in res_idx]
@@ -337,7 +342,7 @@ def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame
     """Deterministic slotter. Uses only history lines. Top 720 fill the PM with no zone above 1.0 expected load
     (keeping a SKU's current PM slot when the zone allows); the next fastest get aisle slots in tiers of 60 from
     aisles 14/15 outward, keeping a current aisle slot within ``tolerance_m`` of the assigned aisle;
-    active_capacity_units = 2 days of cover rounded up to 10."""
+    active_capacity_units = TARGET_COVER_DAYS days of cover rounded up to 10 (floor 20)."""
     sku_ids = skus["sku_id"].tolist()
     upp = skus.set_index("sku_id")["units_per_pallet"]
     counts = lines_hist.groupby("sku_id").size().reindex(sku_ids, fill_value=0)
@@ -398,7 +403,7 @@ def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame
             if free[a2]:
                 target[s] = free[a2].pop(0)
                 break
-    cap = np.maximum(10, np.ceil(2.0 * upd / 10) * 10).astype(np.int64)
+    cap = np.maximum(CAP_FLOOR_UNITS, np.ceil(TARGET_COVER_DAYS * upd / 10) * 10).astype(np.int64)
     return pd.DataFrame({"sku_id": sku_ids, "active_loc": target,
                          "reserve_loc": cur["reserve_loc"].reindex(sku_ids).tolist(),
                          "active_capacity_units": cap})
