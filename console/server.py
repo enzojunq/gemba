@@ -13,6 +13,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,43 @@ def humanize_rationale(r: str | None) -> str:
         rest = r[len("(fallback)"):].strip(" :.")
         return "Chair's default choice" + (f": {rest}" if rest and rest != "the chair's choice stands" else "")
     return r
+
+
+# The roles write in the harness's own vocabulary (option ids, what-if ids, lever calls, metric
+# names). Judges read the room, so the console speaks plain words.
+_LEVER_CALL = {"pause_reslot": "pause slot moves", "reslot_tonight": "slot moves tonight", "close_aisle": "close the aisle",
+               "hire_temps": "bring in temps", "protect": "protect", "shift_labor": "move people", "set_priority": "set priorities"}
+_METRIC = {"safety_risk_max": "the safety limit", "safety_risk": "safety risk", "on_time": "on-time",
+           "pm_peak_zone_load": "Pick Module peak load", "pm_peak_load": "Pick Module peak load",
+           "director_escalation": "director escalation", "mispick_rate": "mis-pick rate", "mispicks": "mis-picks",
+           "lines_per_labor_hour": "lines per labor hour", "staging_occupancy": "staging use", "reslot_progress": "reslot progress"}
+
+
+def plain_text(text: str | None, letters: dict[str, str] | None = None, meeting_id: str | None = None) -> str:
+    t = text or ""
+    letters = letters or {}
+
+    def opt(m):
+        oid, n = m.group(0), m.group(1)
+        lab = letters.get(oid) or (letters.get(f"{meeting_id}-o{n}") if meeting_id else None) or chr(64 + int(n))
+        return f"option {lab}"
+    t = re.sub(r"\b[a-z]{2}-[0-9a-f]{8}-m\d+-o(\d+)\b", opt, t)
+    t = re.sub(r"\b(?<!option )o(\d)\b", opt, t)
+
+    def call(m):
+        name, args = m.group(1), m.group(2) or ""
+        days = re.search(r"days\s*=\s*(\d+)", args)
+        moves = re.search(r"n_moves\s*=\s*(\d+)", args)
+        out = _LEVER_CALL.get(name, name.replace("_", " "))
+        if moves: out = f"{moves.group(1)} {out}"
+        if days: out += f" for {days.group(1)} day{'s' if days.group(1) != '1' else ''}"
+        return out
+    t = re.sub(r"\b(" + "|".join(_LEVER_CALL) + r")(?:\(([^)]*)\))?", call, t)
+    t = re.sub(r"\(\s*ev\d+-\d+\s*\)", "(what-if)", t)
+    t = re.sub(r"\bev\d+-\d+\b", "the what-if", t)
+    for k in sorted(_METRIC, key=len, reverse=True):
+        t = re.sub(r"\b" + k + r"\b", _METRIC[k], t)
+    return re.sub(r"\b([a-z]+)_([a-z_]+)\b", lambda m: m.group(0).replace("_", " "), t)
 
 
 def option_letters(opts: list[dict]) -> dict[str, str]:
@@ -375,6 +413,7 @@ def _meeting_bundle(run_id: str, day: int) -> dict | None:
         r = role_of(u["role"])
         u["role_id"], u["role"], u["title"] = r["id"], r["name"], r["title"]
         u["option_label"] = letters.get(u["option_id"]) if u.get("option_id") else None
+        u["text"] = plain_text(u["text"], letters, mid)
     ids = [role_of(a)["id"] for a in (m["attendees"] or [])]
     return {**m, "attendee_ids": ids, "attendees": [role_name(a) for a in ids], "utterances": utts,
             "option_letters": letters, "options": sorted(opts, key=lambda o: -(o["score"] or 0))}
@@ -392,7 +431,7 @@ def _day_bundle(run_id: str, day: int, with_hourly: bool = True) -> dict:
         dec["effect"] = effects(dec["levers"])
         dec["decided_by_id"] = dec["decided_by"]
         dec["decided_by"] = role_name(dec["decided_by"])
-        dec["rationale"] = humanize_rationale(dec["rationale"])
+        dec["rationale"] = plain_text(humanize_rationale(dec["rationale"]))
     events = [dict(e, label=event_label(e), plain=event_plain(e)) for e in store().events(run_id) if e["day"] == day]
     all_hires = [dict(h, role_id=role_of(h["role"])["id"], role=role_name(h["role"]), trigger_label=humanize_trigger(h["trigger"]))
                  for h in _q("hires", run_id=run_id)]

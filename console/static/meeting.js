@@ -271,6 +271,10 @@ export class Room {
     this.dock.hidden = false;
     const wrap = document.createElement("div");
     wrap.className = "options";
+    const cap = document.createElement("div");
+    cap.className = "options-cap";
+    cap.textContent = "Options · score vs doing nothing for 3 days (0 = no better, + = better)";
+    wrap.appendChild(cap);
     const pick = decision && decision.option_id;
     for (const o of options) {
       const d = document.createElement("div");
@@ -279,11 +283,11 @@ export class Room {
       const status = o.vetoed_by ? "vetoed" : o.feasible === false ? "infeasible" : isPick ? "chosen" : "feasible";
       const lock = o.locks ? `<svg class="ic opt-lock" title="locks SKUs in place"><use href="#i-lock"/></svg>` : "";
       d.innerHTML = `<span class="opt-head"><span class="opt-l">${esc(o.label)}</span><span class="opt-by">${esc(o.proposed_by)}</span>
-        <span class="opt-score" title="scorecard score out of 1"><i class="opt-bar"><b style="transform:scaleX(${Math.min(1, Math.max(0, o.score || 0)).toFixed(3)})"></b></i>${o.score != null ? o.score.toFixed(2) : "—"} / 1</span>
+        <span class="opt-score ${(o.score || 0) < 0 ? "is-neg" : ""}" title="score against doing nothing over the next 3 days: 0 = same, +1 = best possible, −1 = worst">${fmtScore(o.score)}</span>
         <span class="opt-status s-${status}">${esc(status)}</span>${lock}</span>
         <span class="opt-levers">${esc(o.effect || (o.lever_labels || []).join(" · "))}</span>
         ${o.vetoed_by ? `<span class="opt-stamp" aria-hidden="true">VETOED by ${esc(o.vetoed_by)}</span>` : ""}
-        <span class="opt-detail" hidden>${esc((o.lever_labels || []).join(" · "))}${o.evidence_id ? ` · evidence ${esc(o.evidence_id)}` : ""}</span>`;
+        <span class="opt-detail" hidden>${esc((o.lever_labels || []).join(" · "))}${o.evidence_id ? " · checked with a what-if" : ""}</span>`;
       d.title = `${o.label} · ${o.proposed_by} · ${(o.lever_labels || []).join("; ")} · click for details`;
       d.addEventListener("click", () => { d.classList.toggle("is-open"); const det = d.querySelector(".opt-detail"); det.hidden = !d.classList.contains("is-open"); });
       wrap.appendChild(d);
@@ -329,4 +333,10 @@ function quietWhy(b) {
   if ((b.drift || []).length) parts.push("forecast drift flagged");
   return parts.join(" · ");
 }
+function fmtScore(v) {
+  if (v == null) return "—";
+  const r = Math.round(v * 100) / 100;
+  return r === 0 ? "±0.00" : `${r > 0 ? "+" : "−"}${Math.abs(r).toFixed(2)}`;
+}
+
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])); }

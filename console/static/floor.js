@@ -374,7 +374,8 @@ export class Floor {
     ctx.textAlign = "right";
     ctx.fillStyle = jam ? pal.hot : pal.muted;
     ctx.font = jam ? "700 12px Schibsted Grotesk, system-ui" : "500 11px Schibsted Grotesk, system-ui";
-    ctx.fillText(jam ? "JAMMED · over the 400 limit" : "jams above 400", mx + mw, my + mh + 19);
+    // the jam warning gets its own line so it never runs into the open-orders label
+    ctx.fillText(jam ? "JAMMED · over the 400 limit" : "jams above 400", mx + mw, my + mh + (jam ? 37 : 19));
     // people: consolidation + loading pools busy
     const busy = ((pools.consolidation && pools.consolidation.busy) || 0);
     const seeds = this.agents.cons;
@@ -459,12 +460,13 @@ export class Floor {
     ctx.textAlign = "right";
     if (tr.next_cutoff != null) {
       const hrs = this.cur.hour;
-      const mins = tr.next_cutoff === 21 ? 30 : 0;
-      const left = Math.max(0, (tr.next_cutoff * 60 + mins) - (hrs * 60 + this.frac(now) * 60));
+      const cutH = Math.floor(tr.next_cutoff);
+      const mins = tr.next_cutoff % 1 ? Math.round((tr.next_cutoff % 1) * 60) : (tr.next_cutoff === 21 ? 30 : 0);
+      const left = Math.max(0, (cutH * 60 + mins) - (hrs * 60 + this.frac(now) * 60));
       const urgent = left <= 60;
       ctx.fillStyle = urgent ? pal.hot : pal.ink;
       ctx.font = "700 15px Bricolage Grotesque, Schibsted Grotesk, system-ui";
-      ctx.fillText(`${String(tr.next_cutoff).padStart(2, "0")}:${mins ? "30" : "00"}`, d.x + d.w - 8, d.y + 34);
+      ctx.fillText(`${String(cutH).padStart(2, "0")}:${String(mins).padStart(2, "0")}`, d.x + d.w - 8, d.y + 34);
       ctx.fillStyle = pal.muted; ctx.font = "500 11px Schibsted Grotesk, system-ui";
       ctx.fillText(`next truck cutoff in ${Math.floor(left / 60)}h ${String(Math.round(left % 60)).padStart(2, "0")}m`, d.x + d.w - 8, d.y + 50);
     } else {

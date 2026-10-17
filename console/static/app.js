@@ -59,7 +59,10 @@ async function boot() {
   let runId = q.get("run");
   const runs = await fetch("/runs").then((r) => r.json());
   if (!runId) {
-    const pick = runs.runs.find((r) => !r.parent_run_id) || runs.runs[0];
+    // Open a run where the org actually met (LLM cost > 0) before any rules-only baseline run.
+    const top = runs.runs.filter((r) => !r.parent_run_id);
+    const pick = top.find((r) => r.recorded && r.status === "done") || top.find((r) => r.llm_usd > 0 && r.status === "done")
+      || top.find((r) => r.status === "done") || runs.runs[0];
     if (!pick) { showEmpty(runs); return; }
     runId = pick.run_id;
     history.replaceState(null, "", `/?run=${encodeURIComponent(runId)}`);
