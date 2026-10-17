@@ -297,7 +297,7 @@ $("#inbox-form").addEventListener("submit", async (e) => {
   $("#inbox-send").disabled = true;
   try {
     const r = await fetch(`/runs/${encodeURIComponent(state.runId)}/inbox`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, day_hint: state.day != null ? state.day + 1 : null }) });
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) { let d = await r.text(); try { d = JSON.parse(d).detail || d; } catch {} throw new Error(typeof d === "string" ? d : JSON.stringify(d)); }
     input.value = "";
     toast("Sent to the inbox. The org reads it at the start of the next simulated day.");
     await refreshRunHeader();

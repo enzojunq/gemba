@@ -494,6 +494,14 @@ def require_token(request: Request, authorization: str | None = Header(default=N
 
 # --------------------------------------------------------------------------- endpoints
 
+def _read_only(what: str) -> None:
+    """The demo console serves a recording (`make demo`): replays and comparisons only. Live work
+    (new runs, forks, inbox) needs the live store: `make console`."""
+    if recorded():
+        raise HTTPException(409, f"This console is replaying a recording, so it cannot {what}. "
+                                 "Start the live console (make console) for that.")
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")
@@ -644,6 +652,7 @@ class InboxIn(BaseModel):
 @app.post("/runs/{run_id}/inbox")
 def inbox(run_id: str, body: InboxIn) -> dict:
     _run_or_404(run_id)
+    _read_only("take an inbox message")
     text = body.text.strip()
     if not text:
         raise HTTPException(422, "text is empty")
@@ -749,6 +758,7 @@ def fork_presets() -> dict:
 @app.post("/runs/{run_id}/fork")
 def fork(run_id: str, body: ForkIn) -> dict:
     _run_or_404(run_id)
+    _read_only("fork a run")
     levers = list(body.levers)
     if body.preset:
         if body.preset not in PRESETS:
@@ -760,7 +770,11 @@ def fork(run_id: str, body: ForkIn) -> dict:
     api = _engine_api()
     typed = [_lever(lv) for lv in levers]
     cons = [c.Event(**e) for e in body.constraints]
-    new_id = api.fork_run(run_id, body.day, typed, cons, store=store())
+    try:
+        new_id = api.fork_run(run_id, body.day, typed, cons, store=store())
+    except FileNotFoundError as exc:  # the parent's day snapshot is not on this machine
+        raise HTTPException(409, f"No snapshot of {run_id} for day {body.day - 1} on this machine, so it cannot be forked here. "
+                                 "Fork a run that was executed by this console.") from exc
     _LIVE.add(new_id)
     return {"ok": True, "run_id": new_id, "parent_run_id": run_id, "day": body.day, "levers": levers}
 
@@ -780,6 +794,7 @@ class RunIn(BaseModel):
 
 @app.post("/runs", dependencies=[Depends(require_token)])
 def start_run(body: RunIn) -> dict:
+    _read_only("start a new run")
     api = _engine_api()
     run_id = api.start_run(body.scenario, body.profile, body.playbook, body.policy, body.seed, store=store())
     _LIVE.add(run_id)
