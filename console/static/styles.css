@@ -666,4 +666,19 @@ body.is-compare #btn-play, body.is-compare #speed, body.is-compare #btn-fork, bo
 .learn-note { display: block; margin-top: 4px; font-size: 12.5px; color: var(--text-3); }
 .rm-tag.t-model { color: var(--amber-2); background: var(--amber-dim); text-transform: none; letter-spacing: 0; }
 .rm-tag.t-sbx { color: var(--teal); background: var(--teal-dim); text-transform: none; letter-spacing: 0; }
-.pill-sandbox { color: var(--teal); border-color: var(--teal); background: var(--teal-dim); white-space: nowrap; }
+.pill-sandbox { color: var(--teal); border-color: var(--teal); background: var(--teal-dim); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.pill-sandbox .ic { width: 13px; height: 13px; }
+.btn-talk { color: var(--teal); border-color: var(--teal); background: var(--teal-dim); white-space: nowrap; flex: none; }
+.btn-talk:hover { background: rgba(63, 209, 195, 0.26); }
+.talk-cmd { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); font: 500 12.5px var(--font-data); color: var(--text-2); white-space: pre-wrap; }
+.drawer-talk { inset: 10px; display: flex; flex-direction: column; }
+.talk-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; display: grid; gap: 10px; align-content: start; }
+.talk-msg { display: grid; gap: 3px; max-width: 78ch; }
+.talk-msg.is-you { justify-self: end; text-align: right; }
+.talk-who { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); font-weight: 600; }
+.talk-text { padding: 9px 12px; border-radius: 10px; background: var(--surface-2); font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+.talk-msg.is-you .talk-text { background: var(--amber-dim); }
+.talk-msg.is-wait .talk-text { color: var(--text-3); font-style: italic; }
+.talk-msg.is-err .talk-text { background: var(--red-dim); color: var(--red); }
+.talk-form { display: flex; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--line); }
+.talk-form input { flex: 1; min-width: 0; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--text); font: inherit; }

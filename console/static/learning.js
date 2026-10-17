@@ -65,9 +65,11 @@ export class Learning {
     const won = g ? (g.promoted ?? g.improved) : s1 > s0;
     const sc = j.scenarios.length;
     const viol = g && g.violations_v0 != null ? ` · rule breaches per run ${(+g.violations_v0).toFixed(1)} → ${(+g.violations_v1).toFixed(1)}` : "";
+    const earlier = (j.earlier_gates || []).map((e) => `<span class="learn-note">Earlier gate: ${e.promoted ? "promoted" : "not promoted"}${e.reason ? ` (${esc(e.reason)})` : ""}${e.mean_score_v0 != null ? `: ${sgn(e.mean_score_v0)} → ${sgn(e.mean_score_v1)}` : ""}.</span>`).join("");
+    const fbNote = g && g.fallbacks_from != null ? `, ${(g.fallbacks_from || 0) + (g.fallbacks_to || 0)} LLM fallbacks` : "";
     return won
-      ? { kind: "won", html: `<b>Promoted: version 1 beats version 0 on ${sc} scenario${sc === 1 ? "" : "s"} it never trained on.</b> Mean score ${sgn(s0)} → ${sgn(s1)}${viol}. The ${n} lessons enter the playbook.` }
-      : { kind: "lost", html: `<b>Not promoted: version 1 scored below version 0 on the held-out scenario${sc === 1 ? "" : "s"}</b> (${sgn(s0)} → ${sgn(s1)}${viol}). The lessons helped on the days they came from, not on a month the org had never seen, so they stay out of the playbook. That is the gate doing its job.${g && g.reason ? ` <span class="learn-note">Gate note: ${esc(g.reason)}</span>` : ""}` };
+      ? { kind: "won", html: `<b>Promoted: version 1 beats version 0 on ${sc} scenario${sc === 1 ? "" : "s"} it never trained on.</b> Mean score ${sgn(s0)} → ${sgn(s1)} (margin ${sgn(s1 - s0, 4)})${viol}${fbNote}. The ${n} lesson${n === 1 ? "" : "s"} enter${n === 1 ? "s" : ""} the playbook. ${sc} scenario${sc === 1 ? "" : "s"} × 1 seed: evidence, not proof.${earlier}` }
+      : { kind: "lost", html: `<b>Not promoted: version 1 scored below version 0 on the held-out scenario${sc === 1 ? "" : "s"}</b> (${sgn(s0)} → ${sgn(s1)}${viol}). The lessons helped on the days they came from, not on a month the org had never seen, so they stay out of the playbook. That is the gate doing its job.${g && g.reason ? ` <span class="learn-note">Gate note: ${esc(g.reason)}</span>` : ""}${earlier}` };
   }
 
   chart(j) {

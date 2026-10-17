@@ -19,3 +19,4 @@ console/designer/skills/gemba/token
 
 # per-machine: when the NemoClaw sandbox last called this console
 console/designer/sandbox_seen.json
+console/designer/chat_url.txt

@@ -55,4 +55,5 @@ Console: `make demo`, browser ~1440x900 (B's spoken script is `PITCH.md`). Befor
 | "Fork any day with a different call" | `/?compare=bt-cb97aeb0,fk-3b1e986f` | verdict sentence, synced timelines (complete after B's second export) |
 | "customer-first versus efficiency-first" | `/?compare=bt-cb97aeb0,bt-449cd50d` | first divergence day 64: customer-first pauses, efficiency-first moves 200 |
 | "Type a disruption in plain words" | any run | Scenario → Draft from words (or the Inbox box) |
+| "Type a disruption in plain words" (NemoClaw) | bottom bar **Talk to Gemba · NemoClaw** | chat drawer inside the console; each message is one turn of the Scenario Designer agent in the NemoClaw sandbox (20 s limit; if the agent is slow or empty the drawer shows a scripted Gemba answer, tagged "scripted"). Try "what can you do for me here?" or "rehearse a peak week" |
 | "keeps the lesson only if it wins on scenarios it has never seen" | header **Learning** | lessons + their forks; v0 vs v1 chart fills after the gate (~16:00) |

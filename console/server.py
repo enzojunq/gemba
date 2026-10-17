@@ -769,12 +769,29 @@ def learning() -> dict:
                       "compare": f"{rid},{fid}" if rid and fid and store().get_run(rid) and store().get_run(fid) else None})
     rows = [dict(r, metrics=_json(r.get("metrics")) or {}) for r in _q("eval_results")]
     gates = [r for r in rows if r["contender"] == "gate"]
+    def _norm(g: dict) -> dict:
+        g = dict(g)
+        for a, b in (("mean_score_v0", "mean_score_from"), ("mean_score_v1", "mean_score_to"),
+                     ("violations_v0", "violations_from"), ("violations_v1", "violations_to")):
+            if g.get(a) is None and g.get(b) is not None:
+                g[a] = g[b]
+        if g.get("promoted") is None:
+            g["promoted"] = g.get("improved")
+        g.setdefault("rule", "spec 13.2: mean test score up and violations not up")
+        # a verdict exists when `promoted` is decided; `reason` is then its explanation, not a refusal
+        g["no_verdict"] = g.get("promoted") is None or bool((g.get("fallbacks_from") or 0) + (g.get("fallbacks_to") or 0))
+        return g
+    gates = [_norm(r["metrics"]) for r in gates]
+    final = gates[-1] if gates else None
+    gate_runs = set((final or {}).get("run_ids_from") or []) | set((final or {}).get("run_ids_to") or [])
     by: dict[str, dict[str, dict]] = {}
     for r in rows:
         m = r["metrics"]
         if r["contender"] == "gate" or m.get("score") is None or not str(r["scenario_id"]).startswith("test"):
             continue  # the chart is the held-out test set only; train and baseline rows stay out
         name = r["contender"] if r["contender"] != "crew" else "crew_v0"
+        if name.startswith("crew") and gate_runs and m.get("run_id") not in gate_runs:
+            continue  # crew rows from an earlier (dry-run) gate: shown in the history note, not the chart
         sc = by.setdefault(r["scenario_id"], {})
         sc[name] = {"score": float(m["score"]), "violations": m.get("violations"), "run_id": m.get("run_id")}
         if name.startswith("crew") and "static" not in sc and m.get("score_vs_static") is not None:
@@ -783,21 +800,113 @@ def learning() -> dict:
              "runs": {c: v.get("run_id") for c, v in cs.items() if v.get("run_id")},
              "violations": {c: v.get("violations") for c, v in cs.items()},
              "static_derived": bool((cs.get("static") or {}).get("derived"))} for k, cs in sorted(by.items())]
-    gate = None
-    if gates:
-        g = dict(gates[-1]["metrics"])
-        g.setdefault("rule", "spec 13.2: mean test score up and violations not up")
-        for a, b in (("mean_score_v0", "mean_score_from"), ("mean_score_v1", "mean_score_to"),
-                     ("violations_v0", "violations_from"), ("violations_v1", "violations_to")):
-            if g.get(a) is None and g.get(b) is not None:
-                g[a] = g[b]
-        if g.get("promoted") is None:
-            g["promoted"] = g.get("improved")
-        # a verdict exists when `promoted` is decided; `reason` is then its explanation, not a refusal
-        g["no_verdict"] = g.get("promoted") is None or bool((g.get("fallbacks_from") or 0) + (g.get("fallbacks_to") or 0))
-        gate = g
-    return {"rules": rules, "scenarios": scen, "gate": gate,
+    return {"rules": rules, "scenarios": scen, "gate": final, "earlier_gates": gates[:-1],
             "rules_rule": "retro: the fork of the regret day must beat the parent (delta > 0; later runs: > 0.01, no LLM fallbacks)"}
+
+
+CHAT_URL = Path(__file__).resolve().parent / "designer" / "chat_url.txt"
+
+
+@app.get("/designer")
+def designer() -> dict:
+    """Where a human talks to Gemba: the NemoClaw sandbox's chat UI (OpenClaw with the gemba skill).
+    The URL carries a per-machine token, so it comes from `nemoclaw gemba dashboard-url --quiet`
+    saved to console/designer/chat_url.txt (gitignored) or GEMBA_CHAT_URL."""
+    url = (os.environ.get("GEMBA_CHAT_URL") or "").strip()
+    if not url:
+        try:
+            url = CHAT_URL.read_text(encoding="utf-8").strip().splitlines()[0]
+        except (OSError, IndexError):
+            url = ""
+    return {"chat_url": url or None, "sandbox": "gemba", "sandbox_seen": _sandbox_seen(),
+            "setup": "nemoclaw gemba dashboard-url --quiet > console/designer/chat_url.txt"}
+
+
+class AskIn(BaseModel):
+    text: str
+    session: str = "gemba-console"
+
+
+def _nemoclaw_env() -> dict:
+    env = dict(os.environ)
+    env["PATH"] = "/Applications/Docker.app/Contents/Resources/bin:" + str(Path.home() / ".local" / "bin") + ":" + env.get("PATH", "")
+    return env
+
+
+def _agent_reply(raw: str) -> str:
+    """OpenClaw --json prints one JSON document: result.payloads[*].text is the reply."""
+    try:
+        d = json.loads(raw)
+        texts = [p.get("text") for p in ((d.get("result") or {}).get("payloads") or []) if isinstance(p, dict) and p.get("text")]
+        if texts:
+            return "\n\n".join(t.strip() for t in texts)
+    except ValueError:
+        pass
+    out = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        for k in ("text", "content", "reply", "message", "output"):
+            v = d.get(k)
+            if isinstance(v, str) and v.strip():
+                out.append(v.strip())
+            elif isinstance(v, dict) and isinstance(v.get("text"), str):
+                out.append(v["text"].strip())
+    return out[-1] if out else raw.strip()
+
+
+@app.post("/designer/ask", dependencies=[Depends(require_token)])
+def designer_ask(body: AskIn) -> dict:
+    """Talk to Gemba inside the console: one turn of the Scenario Designer agent in the NemoClaw
+    sandbox (`nemoclaw gemba agent --agent main --session-id <s> -m <text> --json`). The agent's
+    own calls come back to this console through the sandbox bridge (tagged "via NemoClaw")."""
+    import shutil
+    import subprocess
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(422, "empty message")
+    env = _nemoclaw_env()
+    exe = shutil.which("nemoclaw", path=env["PATH"])
+    if not exe:
+        raise HTTPException(503, "nemoclaw is not installed on this machine")
+    session = re.sub(r"[^A-Za-z0-9_-]", "-", body.session)[:64] or "gemba-console"
+    # The sandbox agent is a general OpenClaw assistant; the steer keeps it in its Gemba role.
+    steer = ("You are Gemba's Scenario Designer (skill `gemba` in your workspace: read skills/gemba/SKILL.md and "
+             "scenario_schema.md before acting). Answer as Gemba, in plain warehouse language, briefly. "
+             "If asked to rehearse something, write the scenario and start the run through the console API as the skill says. "
+             "Message from the operator at the console: ")
+    t0 = time.time()
+    reply, raw, err = "", "", ""
+    try:
+        proc = subprocess.run([exe, "gemba", "agent", "--agent", "main", "--session-id", session, "-m", steer + text, "--json"],
+                              capture_output=True, text=True, timeout=float(os.environ.get("GEMBA_TALK_TIMEOUT_S") or 20), env=env)
+        raw = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        reply = _agent_reply(proc.stdout or "") if proc.stdout.strip() else ""
+        if proc.returncode != 0 and not proc.stdout.strip():
+            err = f"nemoclaw exited {proc.returncode}"
+    except subprocess.TimeoutExpired:
+        err = "agent timeout"
+    # Demo fallback: a slow or empty agent turn gets the scripted Gemba answer (marked as such).
+    bad = (not reply) or reply.startswith("{") or "no final summary" in reply.lower()
+    if bad:
+        scripted = _talk_script()
+        key = next((k for k in scripted if k != "default" and k != "_about" and k in text.lower()), "default")
+        return {"ok": True, "session": session, "reply": scripted.get(key, scripted.get("default", "")), "scripted": True,
+                "why": err or "agent gave no text", "seconds": round(time.time() - t0, 1), "raw": raw[-2000:], "sandbox_seen": _sandbox_seen()}
+    return {"ok": True, "session": session, "reply": reply, "scripted": False, "seconds": round(time.time() - t0, 1),
+            "raw": raw[-4000:], "sandbox_seen": _sandbox_seen()}
+
+
+def _talk_script() -> dict:
+    try:
+        return json.loads((Path(__file__).resolve().parent / "designer" / "talk_script.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"default": "I can rehearse any month you describe; tell me the events and the days."}
 
 
 @app.get("/forks/presets")

@@ -119,7 +119,7 @@ function setSandboxPill(seen) {
   const el = $("#f-sandbox");
   if (!seen) { el.hidden = true; return; }
   const at = (seen.at || "").slice(11, 16);
-  el.textContent = "NemoClaw connected";
+  el.innerHTML = `<svg class="ic"><use href="#i-claw"/></svg>NemoClaw connected`;
   el.title = `The Scenario Designer agent runs in the NemoClaw sandbox "${seen.sandbox || "gemba"}" (OpenShell) and last called this console${at ? ` at ${at}` : ""} (${seen.path || ""}).`;
   el.hidden = false;
 }
@@ -346,6 +346,36 @@ const scenarioDlg = new ScenarioDialog($("#scenario-dlg"), {
   onRun: (runId) => { location.href = `/?run=${encodeURIComponent(runId)}`; },
 });
 $("#btn-scenario").addEventListener("click", () => scenarioDlg.open({ profile: state.run && state.run.profile }).catch((e) => toast(`Scenario builder failed to load: ${e.message}`, true)));
+
+// ---------------------------------------------------------------- talk to Gemba (NemoClaw chat, inside the console)
+const talk = $("#talk"), talkLog = $("#talk-log");
+const talkSession = `gemba-console-${(location.search.match(/run=([^&]+)/) || [])[1] || "x"}`;
+function talkMsg(who, text, cls = "") {
+  const d = document.createElement("div");
+  d.className = `talk-msg ${who === "You" ? "is-you" : "is-agent"} ${cls}`;
+  d.innerHTML = `<div class="talk-who">${esc(who)}</div><div class="talk-text">${esc(text)}</div>`;
+  talkLog.appendChild(d); talkLog.scrollTop = talkLog.scrollHeight; return d;
+}
+$("#btn-talk").addEventListener("click", () => { talk.hidden = !talk.hidden; if (!talk.hidden) { $("#board").hidden = true; $("#talk-text").focus(); } });
+$("#talk-close").addEventListener("click", () => { talk.hidden = true; });
+$("#talk-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("#talk-text"), text = input.value.trim();
+  if (!text) return;
+  input.value = ""; $("#talk-send").disabled = true;
+  talkMsg("You", text);
+  const wait = talkMsg("Gemba", "Thinking in the sandbox… (the agent may write a scenario and start a run; 10 s to a few minutes)", "is-wait");
+  try {
+    const r = await fetch("/designer/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, session: talkSession }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail));
+    wait.remove();
+    const m = talkMsg("Gemba", j.reply || "(no text in the reply)");
+    if (j.scripted) { const w = m.querySelector(".talk-who"); w.textContent = "Gemba · scripted"; w.title = `Demo answer: the sandbox agent gave no usable text (${j.why || ""})`; }
+    if (j.sandbox_seen) setSandboxPill(j.sandbox_seen);
+  } catch (err) { wait.remove(); talkMsg("Gemba", `Could not reach the sandbox agent: ${err.message}`, "is-err"); }
+  finally { $("#talk-send").disabled = false; input.focus(); }
+});
 
 // ---------------------------------------------------------------- compare dialog
 $("#btn-compare").addEventListener("click", async () => {
