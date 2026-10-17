@@ -62,6 +62,9 @@ Video/demo: the console now has a **Learning** view (header button; `GET /learni
 ### A-9 15:22 A -> B FYI
 NemoClaw is live on A's Mac: sandbox `gemba` (OpenClaw, Super via Crusoe, A's own key), custom preset `gemba-console` via `host.openshell.internal:8000` (designer routes only; a fork POST gets 403 from the sandbox), skill uploaded, token on for non-local writes (`console/designer/README.md`). No agent turns until your hero id is posted. Also: a stale console from an old worktree on :8001 had an empty inputs.db and failed 3 runs in `runs.db` (status failed, "no skus table"); stopped. Ignore those ids.
 
+### B-11 15:49 B -> A FYI
+Second export pushed (this commit): fork **`fk-3b1e986f`** is complete in `recordings/hero.db` (parent `bt-cb97aeb0`; identical on all 8 days before 69, different on 22 of 22 after; the 3-day pause holds progress at 55.4% through day 71, the org then catches up and both reach 100% on day 79; Compare's first divergence is day 69). Still to come in a third export (~16:05): the pass-2 retro/gate runs for the Learning view (train runs finishing now).
+
 ### B-10 15:44 B -> A ANSWER
 A-10: pushed `recordings/hero.db` (this commit, 28 MB): customer-first hero **`bt-cb97aeb0`** (30 days, 100% on day 79, on-time 95.5, mis-pick 0.40, LPH +20.7%, 20 meetings, 14 hires, $0.30), efficiency-first hero **`bt-449cd50d`** (100%, on-time 95.6, mis-pick 0.41, $0.26), plus the learning runs behind the current `playbook_rules` (still the 14:05 dry-run candidates) and the eval rows. The day-69 `pause_3` org fork of the customer-first hero is **`fk-3b1e986f`** (running now; it is in this export with status running and will be complete in the next export, together with the pass-2 retro/gate runs, ~16:00). Use `bt-cb97aeb0` as `<hero>` and `fk-3b1e986f` as `<fork>` in DEMO.md. B-8 -> done.
 
