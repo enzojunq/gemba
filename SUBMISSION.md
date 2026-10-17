@@ -6,12 +6,14 @@ Record on `make demo` (recording `bt-cb97aeb0`) except where marked live (`make 
 
 | t | Say | Show |
 |---|---|---|
-| 0:00 | "Every operational change gets planned on a spreadsheet and survives contact with reality in a daily standup. Simulators model the floor. Nobody models the meeting, or keeps why the decisions were made." | Floor view, day 61, pickers and the pick module animating |
-| 0:12 | "Gemba is a decision twin. Plug in your floor twin, define your org, each role with a KPI to defend, set priorities, write scenarios. An AI version of that org rehearses the plan day by day." | Meeting room, day 66: Sam called in after the rack damage, options with scores, Megan's decision banner |
-| 0:25 | "Decisions have consequences and consequences trigger the next decision, so you watch cascades over weeks." | Cascade drawer on the big-bang run `ev-98548726`, day 64: decision → staging full → key-customer escalation → director |
-| 0:35 | "Fork any day to backtest a different call. Compare priorities. Inject a surprise in plain words." | Compare: hero vs fork `fk-3b1e986f` at day 69 (divergence marker); then live console: type "Aisle 12 closed, forklift hit the upright" in the Inbox |
-| 0:46 | "Every option, objection and number stays in the record, so when an engineer leaves the reasoning doesn't. And the org learns from its own worst days: lessons proven by forking, promoted only on unseen scenarios." | Board drawer (locks, evidence), then the Learning view: lessons with "Open the fork", the gate card |
-| 0:56 | "Today it rehearses a reslot. Thirty days unattended on Nemotron, twenty meetings, thirty cents. Gemba." | Timeline, days 61–90, with the done-check lines; title card |
+| 0:00 | "This is Gemba. It simulates a warehouse and the team that runs it. The floor is a digital twin. The team is a set of AI agents with real jobs: operations, safety, quality, a shift lead, a program manager, each defending its own KPI." | Floor view, day 61 (3 s), then the meeting room with the nine seats lit |
+| 0:12 | "Every morning they hold the standup. Each option comes with a simulator what-if, they argue, the chair decides, and the decision changes the floor. Here a rack got damaged overnight: safety is called in, proposes closing the aisle, the chair keeps the reslot going, and the objection stays on the record." | Meeting room, day 66: Sam's seat lighting up, his option card, Megan's decision banner |
+| 0:27 | "That is what a normal simulation can't do. Here a decision has consequences, and the consequences trigger the next decision. You click the chain." | Cascade drawer on the big-bang run `ev-98548726`, day 64: decision → staging full → key-customer escalation → director |
+| 0:37 | "So an engineer rehearses a change before doing it for real. Fork any day with a different call and see the other future. Change the company's priorities. Type a surprise in plain words." | Compare: hero vs fork `fk-3b1e986f`, divergence at day 69; then the live console: type "Aisle 12 closed, forklift hit the upright" in the Inbox |
+| 0:49 | "Everything stays in the record: options, objections, numbers, reasons. The knowledge doesn't leave with the engineer. And the team learns: lessons proven by forking, kept only if they win on scenarios it has never seen." | Board drawer, then the Learning view: the lesson with "Open the fork", the gate card "promoted" |
+| 0:58 | "Today it's a warehouse reslot. Thirty days, unattended, thirty cents. Any floor twin, any org chart. Gemba." | Timeline, days 61–90, done-check lines; title card |
+
+Spoken test: ~185 words, 62–65 s at a calm pace. If it runs long, cut the sentence "Change the company's priorities."
 
 ## Project description (paste)
 
