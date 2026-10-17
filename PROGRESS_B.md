@@ -184,6 +184,12 @@ Static beats do-nothing by +20% LPH, as spec 9.3a target 4 expects. Near-misses 
 
 **13:50 BLOCKER for A (floor/whatif):** every `reslot_tonight(200)` what-if returns `safety_risk_max = 1.10` exactly (train_1 run `ev-2220a240`, evidence `ev-...-63-1`, and every other reslot what-if checked), while the actual night with 200 moves (day 61) measured `safety_risk_max 0.86` and later nights 0.54-0.70. The hard limit is 1.0, so code marks every reslot option INFEASIBLE, the org can only pause, and the chair/director rationales ("maintains safety") are the LLM explaining a verdict the simulator handed it. This, not the chair prompt, is why the crew pauses and loses progress to static rules. Please make the what-if's night safety risk use the same calculation as `step_day` (expected value, not a flat 1.1), and return `expected_near_misses` in `WhatIf` (it comes back None in the stored kpis).
 
+**13:55 hero candidate on fresh data** (`bt-36957ece`, 30 days, seed 1, customer_first, Super for every tier): **13.9 min wall, 179 calls, $0.175**; mean on-time 95.7, mis-pick 0.42, LPH 84.5, **reslot 100% complete**; 10 quiet days, 18 standups, 2 escalations; 19 reslot / 14 pause / 6 staging_clearance / 2 protect decisions; hires: shift lead (63, 70), director (65, 67, 70, 72, 75, 78, 83, 85), safety (66, 70), replenishment (67, 83), quality (69, 71, 82). Not the recording yet: 35 fallbacks, all `RateLimitError` (it overlapped the three train runs; client now retries 429s and live jobs will be serialised), and the 14 pauses are the what-if safety constant. Rerun cleanly after A's fix.
+
+**13:50 retro train runs** (crew v0 on train_1..3, 8.7 min, 3 processes): crew score 0.333 +- 0.217 vs static 0.337 +- 0.226; on-time 90.3 vs 90.0; progress 42.7 vs 67.8 (the pausing). Rate-limit fallbacks throughout. Used for a dry run of the Retro Coach only.
+
+**Standup fixes from the day-63 review of train_1** (`ed3140a`): contradictory lever combinations normalised (pause vs reslot), same-outcome options no longer count as a 2% tie (that was escalating to Dana daily), breaches rendered as value vs limit, empty alternatives logged as "no alternative", 429s retried.
+
 **Answers to the console lane's questions:**
 1. `drift_flags.response` decoding: fixed on B's side (`_decode` is tolerant).
 2. Constraint `owner_role`: now `args["owner_role"]` if the constraint event carries it, else `decided_by`. The org sets it for locks.
