@@ -93,7 +93,7 @@ def _is_format_rejection(e: Exception) -> bool:
 
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_REASONING_TIMEOUT_S = 90.0  # thinking-on calls (chair, director, coach) routinely exceed 20 s
-DEFAULT_MAX_RETRIES = 1
+DEFAULT_MAX_RETRIES = 3  # the SDK retries 429/5xx/connection errors with backoff; parallel runs hit Crusoe's request cap
 
 
 def reasoning_timeout() -> float:

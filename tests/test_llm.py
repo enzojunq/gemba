@@ -138,10 +138,10 @@ def test_client_timeout_and_retries(monkeypatch, tmp_path):
     from llm.client import client_options
     monkeypatch.delenv("LLM_TIMEOUT_S", raising=False)
     monkeypatch.delenv("LLM_MAX_RETRIES", raising=False)
-    assert client_options() == {"timeout": 20.0, "max_retries": 1}
+    assert client_options() == {"timeout": 20.0, "max_retries": 3}
     monkeypatch.setenv("CRUSOE_API_KEY", "test")
     cl = LLM(cache=ResponseCache(tmp_path / "c.jsonl")).client
-    assert cl.timeout == 20.0 and cl.max_retries == 1
+    assert cl.timeout == 20.0 and cl.max_retries == 3
     monkeypatch.setenv("LLM_TIMEOUT_S", "5")
     monkeypatch.setenv("LLM_MAX_RETRIES", "3")
     assert client_options() == {"timeout": 5.0, "max_retries": 3}

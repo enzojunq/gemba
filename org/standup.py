@@ -836,14 +836,18 @@ class OrgPolicy:
         return f"{m.meeting_id}-o{m.n_options}"
 
     def _add_option(self, role_id: str, p: Proposal, check_authority: bool = True) -> Option | None:
-        levers = list(p.levers)
+        levers = self._normalize(list(p.levers))
         if check_authority:
             levers, rejected = authority.filter_proposal(self.roles[role_id], levers)
             for rj in rejected:
                 log.info("rejected lever %s from %s: %s", rj.lever.kind, role_id, rj.reason)
                 self._utter(role_id, "question", f"rejected lever {rj.lever.kind}: {rj.reason}")
         if not levers:
-            self._utter(role_id, "question", f"option '{p.option_label}' dropped: no authorised levers")
+            if p.levers:  # everything it proposed was outside its authority
+                self._utter(role_id, "question", f"option '{p.option_label}' dropped: no authorised levers")
+            else:  # an empty proposal is "no alternative" (models often agree with the tabled option this way)
+                self._utter(role_id, "question", f"no alternative: {p.rationale.strip()[:200]}" if p.rationale
+                            else "no alternative tabled")
             return None
         key = spec_hash(levers, self._day)
         dup = next((o for o in self._m.active() if spec_hash(o.levers, self._day) == key), None)
@@ -873,7 +877,16 @@ class OrgPolicy:
                 s += (f" | evidence `{self._disp_ev(o.evidence_id)}`: on_time {k.on_time_pct:.1f}%, mispick {k.mispick_rate:.2f}%, "
                       f"lph {k.lph:.1f}, progress {k.reslot_progress_pct:.1f}%{dprog}, cost ${k.labor_cost_usd:,.0f}, "
                       f"exp near-misses {o.whatif.expected_near_misses:.2f}, safety_risk {o.whatif.safety_risk_max:.2f}")
-            s += " | feasible" if o.feasible else f" | INFEASIBLE {o.feas.breaches if o.feas else ''}"
+            if o.feasible:
+                s += " | feasible"
+            else:  # value vs limit, not the breach amount (Luke once read "{'safety_risk_max': 0.1}" as the limit)
+                parts = []
+                for name, amount in (o.feas.breaches if o.feas else {}).items():
+                    val = getattr(o.whatif, name, None) if o.whatif is not None else None
+                    limit = self.profile.hard_limits.get(name)
+                    parts.append(f"{name} {val:.2f} > limit {limit:.2f}" if val is not None and limit is not None
+                                 else f"{name} over by {amount:.2f}")
+                s += " | INFEASIBLE: " + "; ".join(parts)
             if with_scores and o.score is not None:
                 s += f" | score {o.score.total:+.4f}"
             if o.vetoed_by:
@@ -1008,6 +1021,9 @@ class OrgPolicy:
     # ================================================================== amend
     @staticmethod
     def _merge(base: list[c.Lever], amendment: list[c.Lever]) -> list[c.Lever]:
+        """Amendment levers replace the same kind in the base, else append; the result is normalised so
+        the last word wins between mutually exclusive levers (an amendment "pause" removes the base
+        "reslot", and vice versa) rather than producing "reslot 200 legs; pause reslot"."""
         out = list(base)
         for lv in amendment:
             idx = [i for i, x in enumerate(out) if x.kind == lv.kind]
@@ -1016,6 +1032,20 @@ class OrgPolicy:
                 out = [x for i, x in enumerate(out) if i not in idx[1:]]
             else:
                 out.append(lv)
+        return OrgPolicy._normalize(out)
+
+    @staticmethod
+    def _normalize(levers: list[c.Lever]) -> list[c.Lever]:
+        """Resolve contradictory lever combinations: `pause_reslot` excludes `reslot_tonight` and
+        `staging_clearance` (the later one in the list wins); duplicates of a kind keep the last."""
+        out: list[c.Lever] = []
+        for lv in levers:
+            out = [x for x in out if x.kind != lv.kind]
+            if lv.kind == "pause_reslot":
+                out = [x for x in out if x.kind not in ("reslot_tonight", "staging_clearance")]
+            elif lv.kind in ("reslot_tonight", "staging_clearance"):
+                out = [x for x in out if x.kind != "pause_reslot"]
+            out.append(lv)
         return out
 
     def _amend(self, twin: Any, state: Any, events: list[Event]) -> None:
@@ -1128,7 +1158,12 @@ class OrgPolicy:
             deviates = chosen is not top
             if len(ranked) >= 2:
                 s1, s2 = ranked[0].total, ranked[1].total
-                if abs(s1 - s2) <= TIE_FRACTION * max(abs(s1), abs(s2), TIE_FLOOR):
+                same_outcome = (ranked[0].whatif is not None and ranked[1].whatif is not None
+                                and ranked[0].whatif.kpis_total == ranked[1].whatif.kpis_total)
+                if same_outcome:  # two ways of doing the same thing is not a tie worth the Director
+                    reasons_note = f"{self._disp_opt(ranked[1].option_id)} has the same outcome as the top option"
+                    self._utter(self.chair_id, "question", reasons_note, option_id=ranked[1].option_id)
+                elif abs(s1 - s2) <= TIE_FRACTION * max(abs(s1), abs(s2), TIE_FLOOR):
                     reasons.append(f"top-2 scores within 2% ({s1:+.4f} vs {s2:+.4f})")
         plan = authority.commit_plan(chosen.levers, self.roles, self.present, self._overtime_remaining(day))
         if plan.escalate:
