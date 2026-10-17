@@ -97,6 +97,20 @@ class Note(BaseModel):
     text: str
 
 
+NIGHT_KINDS = ("reslot_tonight", "pause_reslot", "staging_clearance")
+# Roster caps per pool (spec 7.3 defaults x2, night movers 4 + up to 8 temps): absolute headcount a
+# labor_allocate may set; the floor rejects more, and 0 silently stops a pool.
+POOL_HEADCOUNT_CAP = {"pm": 24, "forklift": 28, "pallet": 6, "replen": 8, "consolidation": 20,
+                      "loading": 12, "night_move": 12, "temp": 8}
+
+
+def with_standing_plan(levers: list[c.Lever], budget: int, order: str, *, paused: bool) -> list[c.Lever]:
+    """Append the standing reslot to a lever set that says nothing about tonight's moves."""
+    if paused or budget <= 0 or any(lv.kind in NIGHT_KINDS for lv in levers):
+        return list(levers)
+    return list(levers) + [ReslotTonight(n_moves=budget, order=order)]
+
+
 class MaybeProposal(BaseModel):
     proposal: Proposal | None = None
 
@@ -813,13 +827,26 @@ class OrgPolicy:
     def _signals(self) -> str:
         b = self.board
         ev = [f"{k} day {d} {a}" for k, d, a in b.events] if b else []
-        return ("Events: " + ("; ".join(ev) or "none")
+        text = ("Events: " + ("; ".join(ev) or "none")
                 + f"\nStanding plan: reslot {self.standing_budget} moves/night by {self.standing_order}"
                 + (f" (paused until day {self.paused_until})" if self.paused_until >= self._day else ""))
+        y, v = getattr(self, "_yday", None), getattr(self, "_view", None)
+        if (y is not None and y.moves_done == 0 and self.standing_budget > 0 and v is not None
+                and v.moves_target_total > v.moves_done_total and self.paused_until < self._day - 1):
+            night = (v.labor_available.get("night") or {}).get("night_move", "?")
+            text += (f"\nWARNING: last night's planned moves did not execute (0 done; night movers available: "
+                     f"{night}; {v.move_queue} legs queued). Restore night labor or expect no progress.")
+        return text
 
     def _lever_help(self, role_id: str) -> str:
         kinds = self.roles[role_id].levers_can_propose
-        return "\n".join(f"- {LEVER_HELP[k].replace('<day>', str(self._day))}" for k in kinds) or "- (none)"
+        lines = [f"- {LEVER_HELP[k].replace('<day>', str(self._day))}" for k in kinds]
+        v = getattr(self, "_view", None)
+        if v is not None and any(k in ("labor_allocate", "overtime") for k in kinds):
+            cur = "; ".join(f"{s}: " + ", ".join(f"{p} {n}" for p, n in pools.items() if n)
+                            for s, pools in v.labor_available.items())
+            lines.append(f"  (current headcount, absolute - {cur})")
+        return "\n".join(lines) or "- (none)"
 
     def _propose(self, day: int) -> None:
         eng = self.engineer_id
@@ -879,6 +906,7 @@ class OrgPolicy:
                 self._utter(role_id, "question", f"no alternative: {p.rationale.strip()[:200]}" if p.rationale
                             else "no alternative tabled")
             return None
+        levers = self._with_standing_plan(levers)
         key = spec_hash(levers, self._day)
         dup = next((o for o in self._m.active() if spec_hash(o.levers, self._day) == key), None)
         if dup is not None:
@@ -922,8 +950,13 @@ class OrgPolicy:
                 return f"pool {lv.pool!r} is not a pool"
             if lv.shift not in SHIFTS:
                 return f"shift {lv.shift!r} is not a shift"
-            if k == "labor_allocate" and not (0 <= lv.headcount <= 40):
-                return f"headcount {lv.headcount} out of range (absolute people, 0-40)"
+            if k == "labor_allocate":
+                cap = POOL_HEADCOUNT_CAP.get(lv.pool, 40)
+                if lv.headcount < 1:
+                    return (f"headcount 0 would empty the {lv.pool} pool (the hero run zeroed its night "
+                            "crew this way); use pause_reslot to stop moves")
+                if lv.headcount > cap:
+                    return f"headcount {lv.headcount} over the {lv.pool} roster cap ({cap})"
         elif k == "resize_slots":
             bad = [i for i in lv.skus if not re.fullmatch(r"S\d{4}", str(i))]
             if not lv.skus:
@@ -1217,6 +1250,13 @@ class OrgPolicy:
             else:
                 out.append(lv)
         return OrgPolicy._normalize(out)
+
+    def _with_standing_plan(self, levers: list[c.Lever]) -> list[c.Lever]:
+        """An option that neither moves nor pauses (resize_slots, labor_allocate, protect alone) is
+        additive to tonight's standing plan, which continues (spec 10.5); the first real-twin hero run
+        lost 8 nights to such options because they silently replaced the reslot."""
+        return with_standing_plan(levers, self.standing_budget, self.standing_order,
+                                  paused=self.paused_until >= self._day)
 
     @staticmethod
     def _normalize(levers: list[c.Lever]) -> list[c.Lever]:
