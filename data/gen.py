@@ -43,12 +43,16 @@ C001_KEY_P = 0.85
 ZIPF_OFFSET = 20.0
 ZIPF_S = 1.3
 PM_PEAK_TARGET = 1.2
-N_EXTRA_SWAPS = 150       # random current-vs-ideal swaps so the target differs in ~1,100 slots
-KEEP_TOLERANCE_M = 8
+N_EXTRA_SWAPS = 350       # random current-vs-ideal swaps so the target differs in ~1,100 slots
+KEEP_TOLERANCE_M = 12             # a current aisle slot within this distance of the assigned aisle is kept
 CURRENT_COVER_DAYS = (3.0, 6.0)   # current layout: days of active cover per SKU (uniform)
 TARGET_COVER_DAYS = 3.0           # target layout: days of cover (2 would imply ~660 replen trips/day > pool)
 UNDERSIZED_COVER_DAYS = 0.4       # trap 4b: the 25 undersized fast SKUs
 CAP_FLOOR_UNITS = 20
+TARGET_PM_SHARE = 0.68            # slotter param: share of hist lines the target PM should carry
+TARGET_KEEP_RANK = 0              # slotter param: PM residents ranked within this stay put if their zone has room (0 = off)
+TARGET_ZONE_CAP = 3800.0          # slotter param: max expected lines/day per PM zone in the target (~0.92 x capacity)
+TARGET_ZONE_CAPACITY = 2 * 16 * 3600 * 0.9 / 25      # 4147 lines/day: 2 pickers x 16 h x 0.9 breaks / 25 s
 
 ROLES_PER_PICK_SHIFT = {"pm": 12, "forklift": 14, "replen": 4, "pallet": 3, "consolidation": 10, "loading": 6}
 NIGHT_MOVERS = 4
@@ -338,10 +342,13 @@ def finish_current(rng, loc, pm_skus, v_total, upd, undersized):
 
 # --------------------------------------------------------------------------- target layout (days 1..history only)
 def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame, current: pd.DataFrame,
-                 zone_cap: float = ZONE_CAP_LINES_PER_DAY, tolerance_m: int = KEEP_TOLERANCE_M) -> pd.DataFrame:
-    """Deterministic slotter. Uses only history lines. Top 720 fill the PM with no zone above 1.0 expected load
-    (keeping a SKU's current PM slot when the zone allows); the next fastest get aisle slots in tiers of 60 from
-    aisles 14/15 outward, keeping a current aisle slot within ``tolerance_m`` of the assigned aisle;
+                 zone_cap: float = TARGET_ZONE_CAP, pm_share: float = TARGET_PM_SHARE,
+                 tolerance_m: int = KEEP_TOLERANCE_M, keep_rank: int = None) -> pd.DataFrame:
+    """Deterministic slotter. Uses only history lines. The fastest SKUs fill the PM until it carries ``pm_share`` of
+    lines (at most 720 SKUs), balanced so no zone exceeds ``zone_cap`` lines/day (keeping a SKU's current PM slot
+    when the zone allows, family members in one zone when it fits; leftover PM slots stay empty); the next fastest
+    get aisle slots in tiers of 60 from aisles 14/15 outward, keeping a current aisle slot that is already at least
+    as close as the assigned aisle (plus ``tolerance_m``), since moving a SKU outward relieves nothing;
     active_capacity_units = TARGET_COVER_DAYS days of cover rounded up to 10 (floor 20)."""
     sku_ids = skus["sku_id"].tolist()
     upp = skus.set_index("sku_id")["units_per_pallet"]
@@ -353,10 +360,12 @@ def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame
     cur = current.set_index("sku_id")
     cur_loc = cur["active_loc"].reindex(sku_ids).tolist()
     order = np.lexsort((np.arange(N_SKU), -v))                    # by v desc, sku index asc
+    keep_rank = TARGET_KEEP_RANK if keep_rank is None else keep_rank
 
     target = [""] * N_SKU
     # PM
-    n_pm = PM_ZONES * PM_SLOTS
+    cum = np.cumsum(v[order]) / max(v.sum(), 1e-9)
+    n_pm = int(min(PM_ZONES * PM_SLOTS, np.searchsorted(cum, pm_share) + 1))
     pm = order[:n_pm]
     load = np.zeros(PM_ZONES + 1)
     pm_used: dict[int, set[int]] = {z: set() for z in range(1, PM_ZONES + 1)}
@@ -371,17 +380,38 @@ def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame
                 pm_used[z].add(slot)
                 continue
         pending.append(s)
+    fam = skus["family_id"].tolist()
+    fam_zone: dict[str, int] = {}
+    for s in pm:
+        if target[s]:
+            fam_zone.setdefault(fam[s], int(target[s][2]))
     for s in pending:
-        best = None
-        for z in range(1, PM_ZONES + 1):
-            if len(pm_used[z]) < PM_SLOTS and (best is None or load[z] < load[best]):
-                best = z
+        open_zones = [z for z in range(1, PM_ZONES + 1) if len(pm_used[z]) < PM_SLOTS]
+        fz = fam_zone.get(fam[s])                                  # same zone as the family when it fits
+        if fz in open_zones and load[fz] + v[s] <= zone_cap:
+            best = fz
+        else:
+            best = min(open_zones, key=lambda z: load[z])          # lowest-load-first
         slot = next(k for k in range(1, PM_SLOTS + 1) if k not in pm_used[best])
+        fam_zone.setdefault(fam[s], best)
         target[s] = pm_loc(best, slot)
         load[best] += v[s]
         pm_used[best].add(slot)
+    # residents: SKUs already in the PM (within the top ``keep_rank``) stay in their slot while the zone has room;
+    # moving them out would cost legs without relieving any zone
+    stay = []
+    for s in order[n_pm:keep_rank]:
+        l = cur_loc[s]
+        if l.startswith("PM"):
+            z, slot = int(l[2]), int(l[4:7])
+            if load[z] + v[s] <= zone_cap and slot not in pm_used[z]:
+                target[s] = l
+                load[z] += v[s]
+                pm_used[z].add(slot)
+                stay.append(s)
+    stay_set = set(stay)
     # aisles
-    rest = order[n_pm:]
+    rest = np.array([s for s in order[n_pm:] if s not in stay_set])
     used = set()
     assigned_aisle = {}
     pending = []
@@ -389,7 +419,7 @@ def build_target(lines_hist: pd.DataFrame, history_days: int, skus: pd.DataFrame
         a = AISLE_SEQ[min(i // TIER, N_AISLE - 1)]
         assigned_aisle[s] = a
         l = cur_loc[s]
-        if l.startswith("A") and abs(aisle_distance(int(l[1:3])) - aisle_distance(a)) <= tolerance_m and l not in used:
+        if l.startswith("A") and aisle_distance(int(l[1:3])) <= aisle_distance(a) + tolerance_m and l not in used:
             target[s] = l
             used.add(l)
         else:
