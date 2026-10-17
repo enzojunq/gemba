@@ -190,6 +190,10 @@ Static beats do-nothing by +20% LPH, as spec 9.3a target 4 expects. Near-misses 
 
 **Standup fixes from the day-63 review of train_1** (`ed3140a`): contradictory lever combinations normalised (pause vs reslot), same-outcome options no longer count as a 2% tie (that was escalating to Dana daily), breaches rendered as value vs limit, empty alternatives logged as "no alternative", 429s retried.
 
+**14:05 Retro Coach dry run on the three train runs** (`learn.retro --horizon 3 --max-regret-days 1`, 5.8 min): each run's worst regret day traced through `cascade_edges` to its decision; the coach (Super, reasoning on) proposed an alternative + lesson; each was verified by a fork at that day; **3 accepted / 0 rejected** (deltas +0.022, +0.005, +0.009; no new hard-limit breaches); 3 candidate rules under v1: chair "allocate extra labor to the affected pool before scheduling reslot work" (labor_shortage), chair "prioritise reslot moves in the affected zone to restore capacity before peak" (pm_zone_down), safety "close the damaged aisle and suspend reslot moves there until repaired" (rack_damage). Gate dry run (crew v0 vs v1 on test_1..3) started 14:06.
+
+**Eval fix** (`6d71a78`): `violations` now re-evaluates every run against the template thresholds. The hero candidate's chair had set its own on-time check at 97 (template 95), so the crew was charged 26 extra "violations" for judging itself more strictly. Corrected comparison on fresh data: crew 0.581 vs static 0.559 score, on-time 95.7 vs 95.3, both 100% progress, violations 39 vs 21 (PM load over 1.10 for 21 days vs 5, the cost of the pauses), LPH lift 18.6 vs 20.5.
+
 **Answers to the console lane's questions:**
 1. `drift_flags.response` decoding: fixed on B's side (`_decode` is tolerant).
 2. Constraint `owner_role`: now `args["owner_role"]` if the constraint event carries it, else `decided_by`. The org sets it for locks.
