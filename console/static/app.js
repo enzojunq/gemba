@@ -4,6 +4,7 @@ import { Room } from "./meeting.js";
 import { Timeline } from "./timeline.js";
 import { Cascade } from "./cascade.js";
 import { Compare } from "./compare.js";
+import { ScenarioDialog } from "./scenario.js";
 
 const $ = (s) => document.querySelector(s);
 const state = { runId: null, run: null, speed: 4, playing: false, es: null, day: null, hourIdx: 0, nHours: 24, lastBundle: null };
@@ -320,6 +321,13 @@ $("#fork-form").addEventListener("submit", async (e) => {
   } catch (err) { const el = $("#fork-err"); el.textContent = err.message; el.hidden = false; }
   finally { $("#fork-go").disabled = false; }
 });
+
+// ---------------------------------------------------------------- scenario builder
+const scenarioDlg = new ScenarioDialog($("#scenario-dlg"), {
+  toast,
+  onRun: (runId) => { location.href = `/?run=${encodeURIComponent(runId)}`; },
+});
+$("#btn-scenario").addEventListener("click", () => scenarioDlg.open({ profile: state.run && state.run.profile }).catch((e) => toast(`Scenario builder failed to load: ${e.message}`, true)));
 
 // ---------------------------------------------------------------- compare dialog
 $("#btn-compare").addEventListener("click", async () => {

@@ -51,7 +51,7 @@ export class Cascade {
     const byId = new Map(sorted.map((n) => [n.id, n]));
     // lane labels
     lanesUsed.forEach((l, i) => {
-      const t = el("text", { class: "cn-t", x: PADX, y: PADY + i * (NH + GY) + NH / 2 + 3, style: "fill:var(--text-3);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600" });
+      const t = el("text", { class: "cn-t", x: PADX, y: PADY + i * (NH + GY) + NH / 2 + 3, style: "fill:var(--text-3);font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:600" });
       t.textContent = LANE_NAME[l]; svg.appendChild(t);
     });
     // edges

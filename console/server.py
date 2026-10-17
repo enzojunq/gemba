@@ -17,11 +17,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select
+
+import yaml
 
 import contracts as c
 from engine.store import JSON_COLS, RunStore, md
@@ -412,6 +414,17 @@ def _day_bundle(run_id: str, day: int, with_hourly: bool = True) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- auth (optional)
+
+def require_token(authorization: str | None = Header(default=None)) -> None:
+    """When GEMBA_API_TOKEN is set, writes need `Authorization: Bearer <token>`; unset = open."""
+    token = os.environ.get("GEMBA_API_TOKEN")
+    if not token:
+        return
+    if authorization != f"Bearer {token}":
+        raise HTTPException(401, "missing or invalid bearer token")
+
+
 # --------------------------------------------------------------------------- endpoints
 
 @app.get("/")
@@ -615,7 +628,7 @@ class RunIn(BaseModel):
     seed: int | None = None
 
 
-@app.post("/runs")
+@app.post("/runs", dependencies=[Depends(require_token)])
 def start_run(body: RunIn) -> dict:
     api = _engine_api()
     run_id = api.start_run(body.scenario, body.profile, body.playbook, body.policy, body.seed, store=store())
@@ -735,6 +748,135 @@ def cascade(run_id: str, node_id: str, depth: int = 6) -> dict:
     return {"run_id": run_id, "root": node_id, "nodes": nodes, "sentence": sentence[:1].upper() + sentence[1:],
             "edges": [{"from": e["from_id"], "to": e["to_id"], "kind": e["kind"]} for e in edges],
             "recorded": recorded()}
+
+
+# --------------------------------------------------------------------------- scenarios (META_HARNESS 4)
+
+SCENARIO_DIR = Path(__file__).resolve().parent.parent / "scenarios"
+PROTECTED_SCENARIOS = {"reslot_default", "train_1", "train_2", "train_3", "test_1", "test_2", "test_3"}
+EXOGENOUS_KINDS = list(c.ExogenousKind.__args__)  # type: ignore[attr-defined]
+DEFAULT_HEADCOUNTS = {
+    "day": {"pm": 12, "forklift": 14, "replen": 4, "pallet": 3, "consolidation": 10, "loading": 6, "night_move": 0, "temp": 0},
+    "swing": {"pm": 12, "forklift": 14, "replen": 4, "pallet": 3, "consolidation": 10, "loading": 6, "night_move": 0, "temp": 0},
+    "night": {"pm": 0, "forklift": 0, "replen": 0, "pallet": 0, "consolidation": 0, "loading": 0, "night_move": 4, "temp": 0},
+}
+ARG_HINTS = {  # field -> (input type, placeholder) for the builder
+    "pool": ("pool", "forklift"), "pct": ("int", "15"), "days": ("int", "3"), "skus": ("csv", "S0412, S0418"),
+    "family": ("text", "seasonal or F042"), "customer": ("text", "C001"), "factor": ("float", "1.6"),
+    "aisle": ("int", "1–28"), "zone": ("int", "1–6"), "hours": ("int", "4"), "no_moves_in_aisles": ("csv", "12, 13, 14"),
+    "n": ("int", "40"), "count": ("int", "2"),
+}
+
+
+def _scenario_summary(raw: dict) -> str:
+    evs = raw.get("events") or []
+    if not evs:
+        return "no scripted events"
+    return "; ".join(event_plain({"kind": e.get("kind"), "args": e.get("args") or {}}) + f" (day {e.get('day')})" for e in evs[:4]) + \
+        (f"; +{len(evs) - 4} more" if len(evs) > 4 else "")
+
+
+@app.get("/scenarios/meta")
+def scenarios_meta() -> dict:
+    """Everything the builder needs to generate its fields from the contract."""
+    return {"kinds": EXOGENOUS_KINDS, "args": {k: c.EVENT_ARGS[k] for k in EXOGENOUS_KINDS}, "hints": ARG_HINTS,
+            "pools": list(c.Pool.__args__), "shifts": list(c.Shift.__args__), "headcounts": DEFAULT_HEADCOUNTS,  # type: ignore[attr-defined]
+            "protected": sorted(PROTECTED_SCENARIOS), "labels": {k: EVENT_LABEL.get(k, k) for k in EXOGENOUS_KINDS},
+            "lead_days": {k: c.ANNOUNCE_LEAD_DAYS.get(k, 0) for k in EXOGENOUS_KINDS},
+            "profiles": sorted(p.stem for p in (SCENARIO_DIR.parent / "profiles").glob("*.yaml")) or ["customer_first"],
+            "auth_required": bool(os.environ.get("GEMBA_API_TOKEN"))}
+
+
+@app.get("/scenarios")
+def list_scenarios() -> dict:
+    out = []
+    for f in sorted(SCENARIO_DIR.glob("*.yaml")):
+        try:
+            raw = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        except Exception as exc:  # a broken file should not hide the rest
+            out.append({"id": f.stem, "file": f.name, "error": str(exc)})
+            continue
+        out.append({"id": raw.get("id", f.stem), "file": f.name, "days": raw.get("days"), "seed": raw.get("seed"),
+                    "n_events": len(raw.get("events") or []), "summary": _scenario_summary(raw),
+                    "protected": f.stem in PROTECTED_SCENARIOS})
+    return {"scenarios": out}
+
+
+@app.get("/scenarios/{sid}")
+def get_scenario(sid: str) -> dict:
+    if "/" in sid or "\\" in sid or ".." in sid:
+        raise HTTPException(422, "bad scenario id")
+    f = SCENARIO_DIR / f"{sid}.yaml"
+    if not f.exists():
+        raise HTTPException(404, f"scenario {sid!r} not found")
+    raw = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+    return {"id": sid, "scenario": raw, "yaml": f.read_text(encoding="utf-8"), "protected": sid in PROTECTED_SCENARIOS}
+
+
+class ScenarioIn(BaseModel):
+    yaml: str
+
+
+class EventsIn(BaseModel):
+    events: list[dict] = []
+
+
+@app.post("/scenarios/phrases")
+def scenario_phrases(body: EventsIn) -> dict:
+    """Plain-language preview for the builder rows (same wording as the console)."""
+    return {"phrases": [event_plain({"kind": e.get("kind"), "args": e.get("args") or {}}) for e in body.events]}
+
+
+@app.post("/scenarios", dependencies=[Depends(require_token)])
+def save_scenario(body: ScenarioIn) -> dict:
+    """Validate (A's loader rules, then contracts.Scenario) and write scenarios/<id>.yaml.
+    HTTP 200 with ok=false on validation errors so an agent can fix and retry."""
+    from scenarios.loader import validate_scenario
+    try:
+        raw = yaml.safe_load(body.yaml)
+    except yaml.YAMLError as exc:
+        return {"ok": False, "id": None, "path": None, "errors": [f"yaml: {exc}"]}
+    errors = validate_scenario(raw)
+    if isinstance(raw, dict):  # only exogenous kinds may be scripted; consequences come from the floor
+        for i, e in enumerate(raw.get("events") or []):
+            if isinstance(e, dict) and e.get("kind") in c.EVENT_KINDS and e.get("kind") not in EXOGENOUS_KINDS:
+                errors.append(f"event {i}: {e.get('kind')!r} is a consequence the floor produces, not a scripted event")
+    sid = str((raw or {}).get("id", "")) if isinstance(raw, dict) else ""
+    if isinstance(raw, dict):
+        if not sid:
+            errors.append("`id` is required")
+        elif "/" in sid or "\\" in sid or ".." in sid or not all(ch.isalnum() or ch in "_-" for ch in sid):
+            errors.append("`id` must be a slug: letters, digits, `_` and `-` only")
+        elif sid in PROTECTED_SCENARIOS:
+            errors.append(f"`id` {sid!r} is protected (train/test/default); choose another name")
+    if not errors:
+        try:
+            c.Scenario.model_validate({**raw, "days": tuple(raw["days"])})
+        except Exception as exc:
+            errors.append(f"contract: {exc}")
+    if errors:
+        return {"ok": False, "id": sid or None, "path": None, "errors": errors}
+    path = SCENARIO_DIR / f"{sid}.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return {"ok": True, "id": sid, "path": str(path.relative_to(SCENARIO_DIR.parent)), "errors": []}
+
+
+class DescribeIn(BaseModel):
+    text: str
+
+
+@app.post("/scenarios/describe", dependencies=[Depends(require_token)])
+def describe_scenario(body: DescribeIn) -> dict:
+    """Plain words -> scenario draft via B's org.scenario_designer (lazy; 503 if absent)."""
+    try:
+        from llm.client import LLM
+        from org.scenario_designer import design_scenario
+    except Exception as exc:
+        raise HTTPException(503, {"error": "the scenario designer is not available in this checkout",
+                                  "detail": str(exc), "hint": "build the scenario by hand in the dialog"})
+    raw, errors, draft = design_scenario(LLM(), body.text)
+    return {"ok": not errors, "scenario": raw, "errors": errors,
+            "confidence": getattr(draft, "confidence", None), "summary": getattr(draft, "summary", None)}
 
 
 @app.get("/health")

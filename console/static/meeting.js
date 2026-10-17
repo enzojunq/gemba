@@ -103,7 +103,7 @@ export class Room {
       this.seatEls[id].querySelector(".seat-pos").setAttribute("transform", `translate(${x.toFixed(1)},${y})`);
     });
     if (oneRow) {
-      place([...core, ...oncall], 20, 8, r.width - 8);
+      place([...core, ...oncall], 16, 8, r.width - 8);
       this.oncallLabel.style.display = "none";
     } else {
       place(core, 18, 0, r.width * 0.98);
@@ -124,7 +124,7 @@ export class Room {
     chip.setAttribute("class", `seat-chip ${cls}`);
     const t = chip.querySelector(".seat-chip-t"); t.textContent = text;
     const w = text.length * 7 + 10;
-    chip.setAttribute("transform", `translate(${(-w / 2).toFixed(1)},${this.tableEl.classList.contains("is-one-row") ? 44 : 47})`);
+    chip.setAttribute("transform", `translate(${(-w / 2).toFixed(1)},${this.tableEl.classList.contains("is-one-row") ? 43 : 47})`);
     const bg = chip.querySelector(".seat-chip-bg"); bg.setAttribute("width", w); bg.setAttribute("height", 15); bg.setAttribute("y", -11);
     t.setAttribute("x", w / 2);
     g.classList.add(cls === "c-veto" ? "is-veto" : "is-lock");
@@ -192,7 +192,8 @@ export class Room {
     this.setHead(this.kindLabel, items.length > 1 ? `${first} (+${items.length - 1} more)` : first);
     this.sub.title = items.join("\n");
     this.transcript.innerHTML = "";
-    this.titleEl.hidden = true; this.titleEl.innerHTML = "";
+    this.titleEl.hidden = false; this.titleEl.className = "room-title is-agenda";
+    this.titleEl.innerHTML = `<span class="decision-k">Agenda</span><div class="decision-body"><div class="decision-t">${esc(items.join(" · ") || "no agenda")}</div></div>`;
     this.dock.hidden = true; this.dock.innerHTML = "";
     const guests = [...this.inRoom].filter((id) => this.roles[id] && this.roles[id].kind !== "core");
     this.narrate(guests.map((id) => `${this.roles[id].name} is called in`));
@@ -255,11 +256,13 @@ export class Room {
         override = top.vetoed_by ? `${top.label} vetoed by ${top.vetoed_by}, so ${chosen.label}` : `${top.label} scored higher; ${decision.decided_by || "the chair"} chose ${chosen.label}`;
       }
     }
-    this.titleEl.hidden = false;
-    this.titleEl.innerHTML = `<span class="decision-k">${esc(kicker)}</span><div class="decision-body"><div class="decision-t">${esc(cap(opt + effect))}</div>
-      <div class="decision-r">${override ? `<span class="decision-why">${esc(override)}.</span> ` : ""}<span class="decision-why-t">${esc(why)}</span></div></div>`;
-    const r = this.titleEl.querySelector(".decision-r");
-    requestAnimationFrame(() => { if (r.scrollHeight > r.clientHeight + 2) { const b = document.createElement("button"); b.className = "decision-more"; b.textContent = "show why"; b.addEventListener("click", () => { r.classList.add("is-open"); b.remove(); }); r.after(b); } });
+    this.titleEl.hidden = false; this.titleEl.className = "room-title";
+    const lead = kicker === "Decision" ? "Decided" : kicker;
+    this.titleEl.innerHTML = `<span class="decision-k">${esc(lead)}</span><div class="decision-body"><div class="decision-t" title="${esc(opt + effect)}">${esc(cap(opt + effect))}${override ? ` <span class="decision-why">· ${esc(override)}</span>` : ""}</div>
+      <div class="decision-r" hidden>${override ? `<b>${esc(override)}.</b> ` : ""}${esc(why)}</div></div>
+      <button type="button" class="decision-more" aria-expanded="false">why</button>`;
+    const r = this.titleEl.querySelector(".decision-r"), b = this.titleEl.querySelector(".decision-more");
+    b.addEventListener("click", () => { r.hidden = !r.hidden; b.textContent = r.hidden ? "why" : "hide"; b.setAttribute("aria-expanded", String(!r.hidden)); });
   }
 
   renderDock(options, decision) {

@@ -169,3 +169,82 @@ def test_fork_and_start_run_without_engine(client, monkeypatch):
     assert r.status_code == 503
     assert client.post(f"/runs/{HERO}/fork", json={"day": 69, "preset": "nope"}).status_code == 422
     assert client.get("/forks/presets").json()["presets"]["protect_pm"]["levers"][0]["kind"] == "protect"
+
+
+# --------------------------------------------------------------------------- scenarios (META_HARNESS 4)
+
+VALID_YAML = "id: judge_test\nseed: 7\ndays: [61, 70]\nevents:\n  - {kind: rack_damage, day: 66, args: {aisle: 7, days: 3}}\n"
+
+
+@pytest.fixture
+def scenario_cleanup():
+    from console.server import SCENARIO_DIR
+    yield
+    for sid in ("judge_test", "judge_test2"):
+        p = SCENARIO_DIR / f"{sid}.yaml"
+        if p.exists():
+            p.unlink()
+
+
+def test_scenarios_list_and_meta(client):
+    j = client.get("/scenarios").json()
+    ids = {s["id"] for s in j["scenarios"]}
+    assert {"reslot_default", "train_1", "test_1"} <= ids
+    default = next(s for s in j["scenarios"] if s["id"] == "reslot_default")
+    assert default["protected"] and default["n_events"] == 8 and "rack damage" in default["summary"]
+    m = client.get("/scenarios/meta").json()
+    assert "rack_damage" in m["kinds"] and "aisle_closure" not in m["kinds"]
+    assert m["args"]["rack_damage"] == ["aisle", "days"] and "forklift" in m["pools"]
+    assert m["headcounts"]["day"]["pm"] == 12 and "reslot_default" in m["protected"]
+    one = client.get("/scenarios/reslot_default").json()
+    assert one["scenario"]["id"] == "reslot_default" and one["protected"]
+    assert client.get("/scenarios/nope").status_code == 404
+    assert client.get("/scenarios/..%2Fx").status_code in (404, 422)
+
+
+def test_scenarios_save_valid(client, scenario_cleanup):
+    r = client.post("/scenarios", json={"yaml": VALID_YAML})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] and j["id"] == "judge_test" and j["path"].endswith("judge_test.yaml") and j["errors"] == []
+    back = client.get("/scenarios/judge_test").json()["scenario"]
+    assert back["events"][0]["kind"] == "rack_damage" and back["days"] == [61, 70]
+    assert any(s["id"] == "judge_test" for s in client.get("/scenarios").json()["scenarios"])
+
+
+def test_scenarios_save_rejects_bad_input(client, scenario_cleanup):
+    bad_kind = client.post("/scenarios", json={"yaml": VALID_YAML.replace("rack_damage", "earthquake")}).json()
+    assert not bad_kind["ok"] and any("unknown kind" in e for e in bad_kind["errors"])
+    consequence = client.post("/scenarios", json={"yaml": VALID_YAML.replace("rack_damage", "aisle_closure")}).json()
+    assert not consequence["ok"] and any("consequence" in e for e in consequence["errors"])
+    bad_day = client.post("/scenarios", json={"yaml": VALID_YAML.replace("day: 66", "day: 95")}).json()
+    assert not bad_day["ok"] and any("outside" in e for e in bad_day["errors"])
+    protected = client.post("/scenarios", json={"yaml": VALID_YAML.replace("judge_test", "reslot_default")}).json()
+    assert not protected["ok"] and any("protected" in e for e in protected["errors"])
+    traversal = client.post("/scenarios", json={"yaml": VALID_YAML.replace("judge_test", "../judge_test")}).json()
+    assert not traversal["ok"] and any("slug" in e for e in traversal["errors"])
+    broken = client.post("/scenarios", json={"yaml": "id: [unclosed"}).json()
+    assert not broken["ok"] and broken["errors"][0].startswith("yaml:")
+    from console.server import SCENARIO_DIR
+    assert not (SCENARIO_DIR / "reslot_default.yaml").read_text().startswith("id: judge")  # untouched
+
+
+def test_scenarios_phrases_and_describe(client):
+    j = client.post("/scenarios/phrases", json={"events": [{"kind": "rack_damage", "args": {"aisle": 7}},
+                                                         {"kind": "labor_shortage", "args": {"pool": "forklift", "pct": 20, "days": 2}}]}).json()
+    assert j["phrases"][0] == "rack damage closed aisle 7" and "forklift" in j["phrases"][1]
+    r = client.post("/scenarios/describe", json={"text": "peak week with night absences"})
+    assert r.status_code in (200, 503)
+    if r.status_code == 503:
+        assert "scenario designer" in r.json()["detail"]["error"]
+    else:
+        assert set(r.json()) >= {"ok", "scenario", "errors"}
+
+
+def test_bearer_token_guards_writes(client, monkeypatch, scenario_cleanup):
+    monkeypatch.setenv("GEMBA_API_TOKEN", "s3cret")
+    assert client.post("/scenarios", json={"yaml": VALID_YAML}).status_code == 401
+    assert client.post("/runs", json={"scenario": "reslot_default", "profile": "customer_first"}).status_code == 401
+    ok = client.post("/scenarios", json={"yaml": VALID_YAML}, headers={"Authorization": "Bearer s3cret"})
+    assert ok.status_code == 200 and ok.json()["ok"]
+    assert client.get("/scenarios").status_code == 200  # reads stay open

@@ -55,6 +55,7 @@
       <button class="seg-b" data-speed="16">16×</button>
     </div>
     <button class="btn btn-accent" id="btn-fork"><svg class="ic"><use href="#i-fork"/></svg>Fork</button>
+    <button class="btn" id="btn-scenario" title="Tweak or write a scenario and run it"><svg class="ic"><use href="#i-bolt"/></svg>Scenario</button>
     <button class="btn" id="btn-compare"><svg class="ic"><use href="#i-compare"/></svg>Compare</button>
     <button class="btn" id="btn-board"><svg class="ic"><use href="#i-board"/></svg>Board</button>
     <button class="btn btn-icon" id="btn-theme" aria-label="Toggle light and dark theme"><svg class="ic ic-sun"><use href="#i-sun"/></svg><svg class="ic ic-moon"><use href="#i-moon"/></svg></button>
@@ -152,6 +153,63 @@
     <div class="dlg-actions">
       <button type="button" class="btn" id="compare-cancel">Cancel</button>
       <button type="submit" class="btn btn-accent">Compare</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="dlg dlg-wide" id="scenario-dlg">
+  <form method="dialog" class="dlg-form sc-form" id="scenario-form" onsubmit="return false">
+    <div class="sc-head">
+      <h3><svg class="ic"><use href="#i-bolt"/></svg>Scenario</h3>
+      <p class="dlg-lede">Script the month the org has to get through: events, demand twists and staffing. Saved as a YAML file the engine can run.</p>
+      <select id="sc-load" class="sc-load" aria-label="Load an existing scenario"></select>
+      <button type="button" class="btn" id="sc-new">New</button>
+    </div>
+    <div class="sc-describe">
+      <label class="field sc-grow"><span>Describe in plain words (optional)</span><input type="text" id="sc-describe" placeholder="e.g. peak week with 20% absences on nights, rack damage in aisle 7 on day 66"></label>
+      <button type="button" class="btn" id="sc-describe-go">Draft from words</button>
+    </div>
+    <div class="sc-grid">
+      <div class="sc-col">
+        <div class="sc-row">
+          <label class="field sc-grow"><span>Scenario name (id)</span><input type="text" id="sc-id" placeholder="peak_week_night_absence" required></label>
+          <label class="field sc-f-s"><span>seed</span><input type="number" id="sc-seed" min="0"></label>
+          <label class="field sc-f-s"><span>from day</span><input type="number" id="sc-d0" min="1" max="90"></label>
+          <label class="field sc-f-s"><span>to day</span><input type="number" id="sc-d1" min="1" max="90"></label>
+        </div>
+        <div class="sc-sec">
+          <div class="sc-sec-head"><h4>Events</h4><button type="button" class="btn" id="sc-add">+ add event</button></div>
+          <div class="sc-events" id="sc-events"></div>
+        </div>
+        <div class="sc-sec">
+          <h4>Demand perturbation</h4>
+          <div class="sc-row">
+            <label class="field"><span>family scale %</span><input type="number" id="sc-p-scale" placeholder="0"></label>
+            <label class="field"><span>seasonal group seed</span><input type="number" id="sc-p-seed" placeholder="—"></label>
+            <label class="field"><span>surge shift days</span><input type="number" id="sc-p-shift" placeholder="0"></label>
+          </div>
+        </div>
+      </div>
+      <div class="sc-col">
+        <div class="sc-sec" id="sc-headcounts-wrap">
+          <h4>Headcounts <small>people per pool and shift · only changed cells are written</small></h4>
+          <table class="sc-hc" id="sc-headcounts"></table>
+        </div>
+        <div class="sc-sec sc-grow-v">
+          <h4>YAML <small>what gets saved</small></h4>
+          <textarea id="sc-yaml" class="sc-yaml" readonly spellcheck="false"></textarea>
+        </div>
+      </div>
+    </div>
+    <ul class="dlg-err sc-errors" id="sc-errors" hidden></ul>
+    <div class="dlg-actions sc-actions">
+      <label class="field sc-token" id="sc-auth" hidden><span>API token</span><input type="password" id="sc-token" placeholder="Bearer token"></label>
+      <label class="field sc-f-m"><span>profile</span><select id="sc-profile"></select></label>
+      <label class="field sc-f-m"><span>policy</span><select id="sc-policy"><option value="org">org (agents)</option><option value="static">static rules</option><option value="do_nothing">do nothing</option></select></label>
+      <span class="sc-spacer"></span>
+      <button type="button" class="btn" id="sc-cancel">Close</button>
+      <button type="button" class="btn" id="sc-save">Save</button>
+      <button type="button" class="btn btn-accent" id="sc-run"><svg class="ic"><use href="#i-play"/></svg>Save &amp; run</button>
     </div>
   </form>
 </dialog>
