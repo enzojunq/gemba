@@ -366,7 +366,7 @@ $("#f-title").addEventListener("click", async (e) => {
   const when = (r) => { const d = new Date(r.started_at || ""); return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
   const st = (r) => r.status === "done" ? `${r.n_days || r.days_done} days` : r.status === "stopped" ? `stopped after ${r.days_done} days` : `${esc(r.status)} · day ${r.days_done} of ${r.n_days || "?"}`;
   const row = (r) => `<button type="button" role="option" class="rm-row ${r.run_id === state.runId ? "is-current" : ""}" data-run="${esc(r.run_id)}">
-      <span class="rm-name">${esc(label(r))}${r.parent_run_id ? ` <span class="rm-tag t-fork">fork · day ${r.fork_day}</span>` : ""}${r.recorded ? ' <span class="rm-tag t-rec">recorded</span>' : ""}</span>
+      <span class="rm-name">${esc(label(r))}${r.parent_run_id ? ` <span class="rm-tag t-fork">fork · day ${r.fork_day}</span>` : ""}${r.recorded ? ' <span class="rm-tag t-rec">recorded</span>' : ""}${(r.models || []).length ? ` <span class="rm-tag t-model">${esc(r.models.join(" + "))} on Crusoe</span>` : ""}${r.via_sandbox ? ' <span class="rm-tag t-sbx">via NemoClaw</span>' : ""}</span>
       <span class="rm-meta">${st(r)} · started ${esc(when(r))} · ${esc(r.run_id)}</span></button>`;
   const sec = (title, list) => list.length ? `<div class="rm-sec"><h4>${title}</h4>${list.map(row).join("")}</div>` : "";
   const main = all.filter((r) => r.mode !== "eval" && !(r.parent_run_id && /^ev-/.test(r.parent_run_id)));

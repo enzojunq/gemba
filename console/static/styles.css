@@ -664,3 +664,5 @@ body.is-compare #btn-play, body.is-compare #speed, body.is-compare #btn-fork, bo
 .gate-row b { font-family: var(--font-data); color: var(--text); }
 .gate-row b.is-neg { color: var(--red); }
 .learn-note { display: block; margin-top: 4px; font-size: 12.5px; color: var(--text-3); }
+.rm-tag.t-model { color: var(--amber-2); background: var(--amber-dim); text-transform: none; letter-spacing: 0; }
+.rm-tag.t-sbx { color: var(--teal); background: var(--teal-dim); text-transform: none; letter-spacing: 0; }

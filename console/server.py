@@ -457,7 +457,7 @@ def _day_bundle(run_id: str, day: int, with_hourly: bool = True) -> dict:
         dec["decided_by"] = role_name(dec["decided_by"])
         dec["rationale"] = plain_text(humanize_rationale(dec["rationale"]))
     events = [dict(e, label=event_label(e), plain=event_plain(e)) for e in store().events(run_id) if e["day"] == day]
-    all_hires = [dict(h, role_id=role_of(h["role"])["id"], role=role_name(h["role"]), trigger_label=humanize_trigger(h["trigger"]))
+    all_hires = [dict(h, role_id=role_of(h["role"])["id"], role=role_name(h["role"]), trigger_label=plain_text(humanize_trigger(h["trigger"])))
                  for h in _q("hires", run_id=run_id)]
     hires = [h for h in all_hires if h["day"] == day or h.get("released_day") == day]
     active = [h for h in all_hires if h["day"] <= day and (h["released_day"] is None or h["released_day"] > day)]
@@ -507,6 +507,25 @@ def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")
 
 
+MODEL_LABEL = {"nvidia/NVIDIA-Nemotron-3-Super-120B-A12B": "Nemotron 3 Super", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B": "Nemotron 3 Nano",
+               "nvidia/NVIDIA-Nemotron-3-Ultra-253B-A30B": "Nemotron 3 Ultra", "deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro"}
+SANDBOX_RUNS = Path(__file__).resolve().parent / "designer" / "sandbox_runs.json"
+"""Run ids started by the Scenario Designer sandbox (a POST /runs carrying the bearer token from
+another host). Kept as a small tracked file so a recording can say which runs NemoClaw started."""
+
+
+def _sandbox_runs() -> set[str]:
+    try:
+        return set(json.loads(SANDBOX_RUNS.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
+def _note_sandbox_run(run_id: str) -> None:
+    ids = sorted(_sandbox_runs() | {run_id})
+    SANDBOX_RUNS.write_text(json.dumps(ids, indent=0) + "\n", encoding="utf-8")
+
+
 _LIVE: set[str] = set()  # runs started by this console process (forks and POST /runs)
 
 
@@ -518,10 +537,18 @@ def list_runs() -> dict:
         org = {r[0] for r in conn.execute(select(calls.c.run_id).group_by(calls.c.run_id))}
         org |= {r[0] for r in conn.execute(select(met.c.run_id).group_by(met.c.run_id))}
         days = dict(conn.execute(select(md.tables["day_results"].c.run_id, func.count()).group_by(md.tables["day_results"].c.run_id)).all())
+    with store().engine.connect() as conn:
+        models: dict[str, set] = {}
+        for rid, mdl in conn.execute(select(calls.c.run_id, calls.c.model).group_by(calls.c.run_id, calls.c.model)):
+            if mdl and not str(mdl).startswith("("):
+                models.setdefault(rid, set()).add(str(mdl))
+    sandbox = _sandbox_runs()
     out = []
     for r in store().list_runs():
         h = _run_header(r)
         h["org"] = r["run_id"] in org
+        h["models"] = sorted(MODEL_LABEL.get(m, m.rsplit("/", 1)[-1]) for m in models.get(r["run_id"], ()))
+        h["via_sandbox"] = r["run_id"] in sandbox
         h["days_done"] = days.get(r["run_id"], 0)
         # a "running" run this process is not executing was cut off (console restarted)
         if h["status"] == "running" and r["run_id"] not in _LIVE:
@@ -547,7 +574,7 @@ def get_run(run_id: str) -> dict:
             thresholds["reslot_progress_pct"] = k["threshold"]
     hdr["thresholds"] = thresholds
     hdr["events"] = [dict(e, label=event_label(e), plain=event_plain(e)) for e in store().events(run_id)]
-    hdr["hires"] = [dict(h, role_id=role_of(h["role"])["id"], role=role_name(h["role"]), trigger_label=humanize_trigger(h["trigger"]))
+    hdr["hires"] = [dict(h, role_id=role_of(h["role"])["id"], role=role_name(h["role"]), trigger_label=plain_text(humanize_trigger(h["trigger"])))
                     for h in _q("hires", run_id=run_id)]
     hdr["constraints"] = [dict(k, label=event_label(k), owner=role_name(k["owner_role"])) for k in _q("constraints", run_id=run_id)] + protections(run_id)
     hdr["roles"] = roles()
@@ -793,11 +820,13 @@ class RunIn(BaseModel):
 
 
 @app.post("/runs", dependencies=[Depends(require_token)])
-def start_run(body: RunIn) -> dict:
+def start_run(body: RunIn, request: Request, authorization: str | None = Header(default=None)) -> dict:
     _read_only("start a new run")
     api = _engine_api()
     run_id = api.start_run(body.scenario, body.profile, body.playbook, body.policy, body.seed, store=store())
     _LIVE.add(run_id)
+    if authorization and request.client and request.client.host not in _LOOPBACK:
+        _note_sandbox_run(run_id)  # the Scenario Designer sandbox: the only non-local caller with the token
     return {"ok": True, "run_id": run_id}
 
 
