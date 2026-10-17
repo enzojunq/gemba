@@ -52,14 +52,14 @@ Reslotting is the first "pack". The platform pattern (floor twin + org twin + ri
 | Live demo 20% | 2D animated floor, meeting room with characters, live fork, live inbox disruption, live role added from a config file. |
 | Future potential 15% | Wargaming for operations: any site, any operational change, any org chart. Copilot at the daily standup. |
 | Best use of Nemotron | Model tiering by role: Ultra for the chair, director and retro coach (reasoning on, 1M context reads the whole run), Super for stakeholders, Nano for analytics phrasing, event parsing and quiet-day fast path. Prompt layout designed for Crusoe's KV-cache. |
-| Best use of NemoClaw / OpenShell (stretch) | A Scenario Designer (an OpenClaw agent sandboxed by NemoClaw) is a meta-harness over Gemba: it turns plain-language requests into scenario files, starts runs through the console API and summarizes results. The sandbox limits it to Crusoe, Neon and the Gemba API, and it can never touch the floor except through Gemba's typed levers. Production argument: agents that make operational decisions need a blast-radius boundary. |
+| Best use of NemoClaw / OpenShell (stretch) | A Scenario Designer (an OpenClaw agent sandboxed by NemoClaw) is a meta-harness over Gemba: it turns plain-language requests into scenario files, starts runs through the console API and summarizes results. The sandbox limits it to Crusoe and the Gemba API, and it can never touch the floor except through Gemba's typed levers. Production argument: agents that make operational decisions need a blast-radius boundary. |
 
 Banned-list check: not a dashboard (the product is the agent org and its loop; the UI is a window onto it), not RAG (no vector store; playbook rules are selected by event tags), not Streamlit.
 
 ## 5. Scope for the day (must / should / stretch)
 
 **Must (demo fails without it):**
-1. Synthetic warehouse data in Neon Postgres, with a local fallback copy.
+1. Synthetic warehouse data in a local SQLite inputs database (`inputs.db`, WMS-like schema), shaped so the hero cascade is likely (trap 8 in section 7.2).
 2. Floor twin: hourly simulation of picking, replenishment, night moves, consolidator, trucks, mis-picks, safety risk.
 3. Consequence engine with at least 4 cascade rules and causal links.
 4. Org twin: 9 roles from config files, standup protocol, typed levers, authority matrix, veto, lock, escalation, hiring on demand.
@@ -75,9 +75,8 @@ Banned-list check: not a dashboard (the product is the agent org and its loop; t
 
 **Stretch (only if ahead at 15:00):**
 12. Scenario Designer: an OpenClaw agent in a NemoClaw sandbox that writes `scenarios/*.yaml` from plain language and starts runs (section 16). Fallback: a "Describe a scenario" box in the console backed by Nano with the same scenario schema.
-13. Neon branch per fork.
-14. Add a role live from YAML during the demo (e.g., union rep who blocks overtime).
-15. Copilot mode reading a "today" partition.
+13. Add a role live from YAML during the demo (e.g., union rep who blocks overtime).
+14. Copilot mode reading a "today" partition.
 
 ---
 
@@ -87,7 +86,7 @@ Banned-list check: not a dashboard (the product is the agent org and its loop; t
 
 ```
                          +---------------------------+
-   Neon Postgres         |  INPUTS                   |
+   inputs.db (SQLite)    |  INPUTS                   |
    (WMS-like schema) --->|  warehouse data           |
    scenarios/*.yaml ---->|  scenario (events,profile)|
    org/*.yaml ---------->|  org spec (roles, powers) |
@@ -104,7 +103,7 @@ Banned-list check: not a dashboard (the product is the agent org and its loop; t
                                        |                           |
                                        v                           v
                          +---------------------------+   Crusoe Managed Inference
-                         |  RUN STORE (Postgres)     |   (Nemotron 3 Ultra/Super/Nano)
+                         |  RUN STORE (runs.db)      |   (Nemotron 3 Ultra/Super/Nano)
                          |  board, decisions, KPIs,  |
                          |  utterances, cascade graph|
                          |  llm_calls (cache, cost)  |
@@ -122,9 +121,9 @@ Harness view (use this framing in the pitch): the **org twin plus the run engine
 Process model: one Python process per run (async inside). The console server reads the run store and streams. Many runs can execute in parallel (eval, retro forks).
 
 Tech stack:
-- Python 3.11, `pydantic` v2, `numpy`, `pandas`, `sqlalchemy` + `psycopg[binary]`, `pyyaml`, `fastapi`, `uvicorn`, `sse-starlette`, `openai` (OpenAI-compatible client pointed at Crusoe) or `langchain-crusoe` behind the same interface, `pytest`.
+- Python 3.11, `pydantic` v2, `numpy`, `pandas`, `sqlalchemy` (SQLite), `pyyaml`, `fastapi`, `uvicorn`, `sse-starlette`, `openai` (OpenAI-compatible client pointed at Crusoe) or `langchain-crusoe` behind the same interface, `pytest`.
 - Frontend: one static page, plain ES modules, Canvas 2D for the floor, SVG/DOM for the rest. No build step, no framework.
-- Storage: the generator writes local Parquet first (primary, offline-safe) and loads Neon Postgres in the background. Inputs are read from Neon when `DATABASE_URL` is set (this is the "plug in your data" demo) and cached to local Parquet after the first load. The run store is local SQLite by default (fast, offline), with the same schema on Neon via the `RUN_STORE_URL` switch. Never depend on venue wifi for a run.
+- Storage: local SQLite only, two files behind SQLAlchemy URL switches. `INPUTS_DB_URL` (default `inputs.db`) holds the WMS-like input tables written by the generator; `RUN_STORE_URL` (default `runs.db`) holds the run store. The "plug in your data" story is pointing `INPUTS_DB_URL` at your own export with the same schema. No Neon, no Parquet. Never depend on venue wifi for a run.
 
 ## 7. The warehouse (floor twin data model)
 
@@ -151,12 +150,13 @@ Calibrated to Sudhersan's real site, simplified. All numbers are defaults in `sc
   5. Tight PM: greedy fill of top SKUs overloads PM zones by about 20%.
   6. 5% rush orders with a 2-hour due window.
   7. 3% full-pallet lines (reserve picks).
+  8. Key-customer concentration: one key customer's lines come mostly from the fast and seasonal families that `phaser.rank_moves` moves first, so a learning dip after an aggressive night can push that customer's mis-picks over the C2 threshold. This makes the hero cascade likely without scripting it.
 
 ### 7.3 Workforce (per day; two pick shifts plus night)
 
 | Role (people) | Shift | Default headcount | What they do in the twin |
 |---|---|---|---|
-| PM pickers | Day (06:00–14:00), Swing (14:00–22:00) | 2 per zone × 6 = 12 per shift | Pick-to-tote in their zone, 18 s/line base |
+| PM pickers | Day (06:00–14:00), Swing (14:00–22:00) | 2 per zone × 6 = 12 per shift | Pick-to-tote in their zone, 25 s/line (18 s pick + tote handling; section 9.2 is authoritative) |
 | Forklift order pickers | Day, Swing | 14 per shift | Travel to aisle slots, case and each picks |
 | Reach-truck drivers (replenishment) | Day, Swing | 4 per shift | Pallet down from reserve to active, 6 min/trip |
 | Pallet pickers | Day, Swing | 3 per shift | Full-pallet lines from reserve, 180 s/line |
@@ -173,7 +173,7 @@ Total about 110 people on payroll, about 104 on a normal day. Each person is a r
 3. **Full-pallet pick** from reserve.
 4. **Rush pick** (any of the above, released with priority, due within 2 hours).
 
-## 8. Data layer (Neon Postgres)
+## 8. Data layer (SQLite)
 
 ### 8.1 Input schema (looks like a WMS export)
 
@@ -292,7 +292,7 @@ Runs at the end of each day. Each rule reads state and KPIs and may emit an even
 | C7 | Stockout lines > 1% of lines | `replen_alert` (Replenishment Lead hired) |
 | C8 | Temps active | ramp state (productivity, mis-picks) for 5 days |
 
-**Cascade links (who writes `cascade_edges`).** Node ids are typed: `dec:<id>`, `evt:<id>`, `kpi:<run>:<day>:<name>`, `mtg:<id>`, `con:<id>` (constraint). The store writes an edge whenever a record with `caused_by` is inserted. Attribution rules: a mis-pick on a SKU in a learning dip is attributed to the decision that moved it; overtime fatigue to the decisions that approved the overtime; staging congestion to the reslot decisions that filled staging; a meeting to the events on its agenda; a decision to its meeting. KPI nodes link to the consequence rule that fired. The cascade shown in the demo (section 22) is emergent, so tune the hero scenario's calendar until it appears, and pick the hero run from several seeds if needed.
+**Cascade links (who writes `cascade_edges`).** Node ids are typed: `dec:<id>`, `evt:<id>`, `kpi:<run>:<day>:<name>`, `mtg:<id>`, `con:<id>` (constraint). The store writes an edge whenever a record with `caused_by` is inserted. Attribution rules: a mis-pick on a SKU in a learning dip is attributed to the decision that moved it; overtime fatigue to the decisions that approved the overtime; staging congestion to the reslot decisions that filled staging; a meeting to the events on its agenda; a decision to its meeting. KPI nodes link to the consequence rule that fired. The cascade shown in the demo (section 22) is emergent: trap 8 makes it likely, a test checks that the chain fires on at least one seed by 13:50, and if needed you tune the hero scenario's calendar and pick the hero run from several seeds. Never script the chain.
 
 ### 9.4a Forecast demand (used by every what-if; never sees future actuals)
 - For day d, build demand by resampling orders from the same weekday in the 14 days before d (seeded RNG keyed by (seed, d)). Days already executed in the held-out month count as history, so the forecast adapts to the month-3 shift with a lag, as a real planner would.
@@ -475,14 +475,15 @@ Validation rules enforced in code: positions without valid evidence ids are reje
 ### 11.1 Day loop
 
 ```
-run(scenario, profile, org_spec, playbook_version, mode, fork=None):
+run(scenario, profile, policy, playbook_version, mode, fork=None):   # policy: DecisionPolicy
   load inputs; state = twin.initial_state(); write runs row
   if fork: copy parent's store rows up to fork_day; restore state snapshot; force fork_decision on fork_day
-  done_checks = chair.write_done_checks(profile)   # validated against allowed metric set
+  done_checks = verifier.template(profile)          # code builds the checks from targets + hard limits
+  done_checks = policy.pick_thresholds(done_checks) # org: chair picks within code-set bounds; baselines: defaults
   for day in heldout_days:
       events = calendar[day] + inbox.pop() (parsed by Event Interpreter) + consequences.pending(day)
       state = apply_event_constraints(state, events)
-      meeting = standup(day, state, events)             # section 10.5
+      meeting = policy.decide(day, state, events)       # org: standup (10.5); baselines: fixed rules
       state = twin.apply_levers(state, meeting.decision.levers, day)
       state, result = twin.step_day(state, day, actual_demand[day], events)
       store day_results (with predicted kpis from the chosen option's evidence)
@@ -493,14 +494,16 @@ run(scenario, profile, org_spec, playbook_version, mode, fork=None):
   final = verifier.check_final(); write results; status = done
 ```
 
+**DecisionPolicy.** The org twin and every eval baseline (section 15) implement one interface: `decide(day, state, events) -> decision with levers` and `pick_thresholds(checks)`. The engine never knows which one it is driving. Baselines need no LLM, so engine, floor, consequence, fork and determinism tests run on them in seconds at no cost. There is no mock LLM: org behavior is tested live on Crusoe, made free and repeatable by the response cache.
+
 ### 11.2 Determinism, cache and forks
 - Floor twin is pure given (inputs, seed, levers, events).
-- LLM calls use temperature 0 (or the lowest stable value) and a response cache keyed by `sha256(model, messages, schema)`. A re-run replays exactly; a fork reuses cached calls up to the fork day, then diverges naturally.
+- LLM calls use temperature 0 (or the lowest stable value) and a response cache keyed by `sha256(model, messages, schema)`. A re-run replays exactly; a fork reuses cached calls up to the fork day, then diverges naturally. The cache is exported to `recordings/llm_cache.jsonl` and the hero run to `recordings/hero.db`; both are tracked in git (an exception to the `*.db` ignore rule), so org tests and `make demo` replay offline at $0.
 - **Snapshots:** after each day the engine writes `snapshots/<run_id>/<day>.pkl` containing FloorState, active constraints, locks, hires, pending consequence events, done-checks, drift counters and the RNG state. Add `snapshot_path` to `day_results`.
-- **Fork** = new `runs` row with `parent_run_id`, `fork_day`, `fork_decision`. The engine loads the parent's snapshot from the end of `fork_day − 1`, copies the parent's store rows before `fork_day` (with the new run_id), and runs on. The forced decision **replaces that day's standup only**; a multi-day intent ("protect the PM all week") is entered as a constraint with an end day. From `fork_day + 1` the org decides normally. Stretch: a Neon branch per fork instead of copying rows.
+- **Fork** = new `runs` row with `parent_run_id`, `fork_day`, `fork_decision`. The engine loads the parent's snapshot from the end of `fork_day − 1`, copies the parent's store rows before `fork_day` (with the new run_id), and runs on. The forced decision **replaces that day's standup only**; a multi-day intent ("protect the PM all week") is entered as a constraint with an end day. From `fork_day + 1` the org decides normally.
 
 ### 11.3 Verifier (done-checks)
-Allowed check metrics are exactly the KPI names in 9.3. Daily scope: no hard-limit breach, on-time ≥ target − 2 pts, no jam hours, moves ≤ budget. Final scope: profile targets, reslot progress ≥ 90% of target moves (or a logged chair decision to stop early with reason), scorecard ≥ static-rules baseline.
+Allowed check metrics are exactly the KPI names in 9.3. Code builds every check from the profile's targets and hard limits (`verifier.template`); the chair only picks each threshold within bounds the code sets, and that call is cached like any other. This keeps checks comparable across runs while the org still "writes its own done-checks". Daily scope: no hard-limit breach, on-time ≥ target − 2 pts, no jam hours, moves ≤ budget. Final scope: profile targets, reslot progress ≥ 90% of target moves (or a logged chair decision to stop early with reason), scorecard ≥ static-rules baseline.
 
 ### 11.4 Drift detectors
 - Same what-if spec requested 3+ times (evidence `spec_hash` repeats).
@@ -604,7 +607,7 @@ Animation note: the twin is hourly and pool-level. The canvas samples a represen
 Contenders on every scenario (3 seeds each where time allows):
 1. **Do-nothing:** current layout, no moves, default labor.
 2. **Naive big bang:** move everything to target on day 61, ignore constraints.
-3. **Static rules:** fixed 300 moves/night by value, pause on any event day, no other levers. This is the "hardcoded decisions" baseline.
+3. **Static rules:** fixed 200 moves/night by value (the same budget as the crew), pause on any event day, no other levers. This is the "hardcoded decisions" baseline.
 4. **Crew v0:** org, empty playbook.
 5. **Crew vN:** org with the promoted playbook.
 
@@ -616,7 +619,7 @@ What it is: a meta-harness over Gemba. An OpenClaw agent runs inside a NemoClaw 
 
 Interface (all through the console API in section 14, no direct DB writes):
 - `POST /scenarios` with a scenario YAML, validated against the scenario schema (events must be known kinds, days inside 61–90, pools and aisles must exist). Invalid files are rejected with the validation error so the agent can fix them.
-- `POST /runs {scenario, profile, playbook}`, `POST /scenarios` (validated scenario YAML, used by the Scenario Designer and the console box). then `GET /runs/{id}/day/{d}` and `GET /cascade/{run_id}/{node_id}` to read results.
+- `POST /runs {scenario, profile, playbook}`, then `GET /runs/{id}/day/{d}` and `GET /cascade/{run_id}/{node_id}` to read results.
 - Give OpenClaw these as a small tool/skill file with the endpoint URL and the scenario schema.
 
 Sandbox policy:
@@ -627,7 +630,7 @@ Sandbox policy:
 
 Fallback (build this first, it's 20 minutes): a "Describe a scenario" box in the console. Nano turns the text into a scenario YAML using the same schema and endpoint. The demo works the same; only the hosting story changes.
 
-Schedule: setup probe before 10:45 (section 18), wiring at 14:50–15:30 time-boxed to 40 minutes. If it doesn't run by then, demo the fallback and describe the design.
+Schedule: setup probe and wiring at 14:50–15:30, time-boxed to 40 minutes (the pre-10:45 probe slot has passed). If it doesn't run by then, demo the fallback and describe the design.
 
 Docs: [NemoClaw architecture](https://docs.nvidia.com/nemoclaw/latest/about/how-it-works.html). NemoClaw hosts agent runtimes (OpenClaw, Hermes, Deep Agents `dcode`); we use OpenClaw as the designer and keep the Gemba engine as an ordinary Python process outside the sandbox.
 
@@ -644,7 +647,6 @@ Same loop, different inputs: a nightly job loads yesterday's actuals into the in
 |---|---|---|
 | 09:00 | Sudhersan | Arrive, wifi, claim Crusoe credits, create the org, invite teammate. |
 | 09:15 | Teammate | `curl` one chat call to each of Ultra, Super, Nano; note exact model ids, JSON mode support, latency. |
-| 09:30 | Sudhersan | Create Neon project + empty database; keep `DATABASE_URL` in a password manager, not in chat. |
 | 09:40 | Both | Read sections 1–5 of this doc together (15 min). Agree on the must/should/stretch cut. |
 | 10:00 | Teammate | Skim the Crusoe starter repo for the hackathon; note anything that changes section 12. |
 | 10:15 | Both | Create the public repo (empty), open the build agent(s) with this document as the brief. |
@@ -665,14 +667,15 @@ gemba/
   floor/phaser.py  floor/economics.py  floor/levers.py
   data/gen.py  data/load.py  data/schema.sql
   engine/run.py  engine/events.py  engine/verifier.py  engine/drift.py  engine/fork.py  engine/store.py
-  llm/client.py  llm/cache.py  llm/mock.py
+  llm/client.py  llm/cache.py
+  recordings/  hero.db  llm_cache.jsonl        (tracked in git)
   learn/retro.py  learn/playbook.py  learn/gate.py
   eval/baselines.py  eval/run_eval.py
   console/server.py  console/static/{index.html, app.js, floor.js, meeting.js, timeline.js, styles.css}
   tests/
 ```
 
-Make targets: `make db` (create schema), `make data SEED=1` (generate local Parquet, then load Neon in the background), `make test`, `make baselines`, `make run SCENARIO= PROFILE= PLAYBOOK= LLM=live|mock`, `make fork RUN= DAY= LEVERS=`, `make eval`, `make retro`, `make console`, `make demo` (replay the recorded hero run).
+Make targets: `make db` (create schema), `make data SEED=1` (generate `inputs.db`), `make test`, `make baselines`, `make run SCENARIO= PROFILE= PLAYBOOK= POLICY=org|static|do_nothing|big_bang`, `make fork RUN= DAY= LEVERS=`, `make eval`, `make retro`, `make console`, `make demo` (replay `recordings/hero.db`).
 
 ## 20. Phases, owners, gates (10:45–17:00)
 
@@ -680,12 +683,12 @@ Two people, each driving AI coding agents. Person A = floor + data + UI. Person 
 
 | # | Time | Owner | Build | Gate (must pass before moving on) |
 |---|---|---|---|---|
-| 0 | 10:45–11:00 | Both | Scaffold repo, env, LLM smoke test via `llm/client.py`, DB connect | One JSON-validated call per model tier with **measured latency** (if Super > 8 s or Ultra > 20 s per call, move more roles to Nano now); local SQLite store works; Neon reachable |
-| 1 | 11:00–11:50 | A | `data/gen.py` with the 7 traps; write local Parquet, then load Neon in the background | `--verify`: top-20% share ≥ 75%, family co-occurrence ≥ 0.4, 40% of top-200 in far aisles, PM overload ≈ 20% |
-| 1 | 11:00–11:50 | B | Role YAMLs and prompts (9 roles), schemas, authority matrix, `llm/mock.py`, store | Mock standup produces a decision with evidence ids and a rejected unauthorized lever |
+| 0 | 10:45–11:00 | Both | Scaffold repo, env, LLM smoke test via `llm/client.py`, DB connect | One JSON-validated call per model tier with **measured latency** (if Super > 8 s or Ultra > 20 s per call, move more roles to Nano now); local SQLite stores (`inputs.db`, `runs.db`) work; a repeated call is served from the cache |
+| 1 | 11:00–11:50 | A | `data/gen.py` with the 8 traps; write `inputs.db` | `--verify`: top-20% share ≥ 75%, family co-occurrence ≥ 0.4, 40% of top-200 in far aisles, PM overload ≈ 20%, key customer's lines concentrated in top-ranked move families |
+| 1 | 11:00–11:50 | B | Role YAMLs and prompts (9 roles), schemas, authority matrix, `DecisionPolicy` interface, store | Live standup on Crusoe produces a decision with evidence ids and a rejected unauthorized lever; the re-run replays from cache at $0 |
 | 2 | 11:50–13:00 | A | `floor/sim.py` hourly twin, levers, forecast, whatif (calibration can continue in phase 3) | Determinism test; targets 1–3 of 9.3a hold |
 | 2 | 11:50–12:50 | B | `org/standup.py` full ritual on a stub twin; hiring; veto; lock; escalation | Scripted test: rack damage → Safety hired → veto → chair picks feasible option |
-| 3 | 13:00–13:50 | Both | Integrate: `engine/run.py`, consequences C1, C2, C5, C6 first (others if time), verifier, drift, snapshots + fork | `make run LLM=mock` finishes 30 days; one cascade chain visible in `cascade_edges`; fork at day 69 diverges |
+| 3 | 13:00–13:50 | Both | Integrate: `engine/run.py`, consequences C1, C2, C5, C6 first (others if time), verifier, drift, snapshots + fork | `make run POLICY=static` finishes 30 days; one cascade chain visible in `cascade_edges`; fork at day 69 diverges |
 | 4 | 13:50–14:30 | B | Live run with Crusoe on default scenario (this becomes the first hero candidate); eval baselines; **start retro train runs (10-day) in the background at ~14:00** | Live 30-day run ≤ $1.50; eval table with 4 contenders on 1 scenario |
 | 4 | 13:50–14:50 | A | Console: floor canvas, meeting room, timeline, compare, inbox | Replay of the live run end to end; fork button creates and streams a fork |
 | 5 | 14:30–15:30 | B | Retro coach on finished train runs, verification forks, then the test gate (2–3 unseen 10-day scenarios, v0 vs v1 in parallel) | v1 produced; gate result recorded (pass or fail) |
@@ -693,11 +696,11 @@ Two people, each driving AI coding agents. Person A = floor + data + UI. Person 
 | 7 | 15:30–16:15 | Both | Freeze. Record hero run, fork, profile comparison; README; 1-min video | Clean-clone `make demo` works offline |
 | 8 | 16:15–17:00 | Both | Rehearse the 3-minute demo twice; submit | Submitted before 17:00 |
 
-Cut order when a phase overruns by > 15 minutes: (1) NemoClaw, (2) Neon branching, (3) second profile, (4) consequences C3/C4/C8, (5) on-call roles beyond Safety and Quality, (6) retro (fall back to Done Means Done), (7) canvas animation (keep static map with colored loads).
+Cut order when a phase overruns by > 15 minutes: (1) Scenario Designer on NemoClaw (keep the Nano console box), (2) second profile, (3) consequences C3/C4/C8, (4) on-call roles beyond Safety and Quality, (5) retro (fall back to Done Means Done), (6) canvas animation (keep static map with colored loads).
 
 Never cut: the floor twin, the standup with evidence, done-checks, one fork, the eval table.
 
-**Critical path:** data gen → floor twin → mock standup → run loop → live hero run → console replay. Everything else hangs off it. If the critical path is late, stop all side work and help it.
+**Critical path:** data gen → floor twin → live standup (cached) → run loop → live hero run → console replay. Everything else hangs off it. If the critical path is late, stop all side work and help it.
 
 ## 21. Decision gate at 15:30
 - If v1 beats v0 on the test set with no new violations: submit under **Version N+1**. Headline = the before/after chart, then show the cascade and fork.
@@ -739,10 +742,10 @@ Explainer film (about 3 minutes, made before the event, figures illustrative): h
 |---|---|
 | Simulator numbers nonsensical by 12:50 | Tune constants, not data; fall back to day-level formulas from `research/HANDOFF.md` §4 |
 | LLM latency makes runs slow | Quiet-day fast path, Nano for narrow roles, parallel positions, response cache, reasoning only for chair/director |
-| JSON output flaky | Schema validation + one retry + safe fallback; mock LLM for all tests |
+| JSON output flaky | Schema validation + one retry + safe fallback; engine tests use LLM-free baselines; org tests replay the committed LLM cache |
 | Crew doesn't beat static rules | Check traps exist; give the org the right levers (staging clearance, protect); report honestly |
 | Retro doesn't improve | Decision gate → Done Means Done track |
-| Venue wifi / Neon down | Local Postgres or SQLite fallback via `DATABASE_URL`; recorded hero run |
+| Venue wifi down | All data is local SQLite; `recordings/` (LLM cache + hero run) replays offline. Crusoe itself has no fallback provider by decision |
 | Scope creep | Section 5 is the contract; anything else goes in `DECISIONS.md` as "later" |
 | Demo shows pre-built work | Everything in the repo is created after 10:45; this doc is a plan, not code. Don't paste code from earlier research files; write fresh code from this spec |
 
@@ -761,7 +764,7 @@ Decisions we made, the alternatives, and why. Revisit only with new evidence.
 7. **Typed levers + authority matrix + veto/lock/capacity-truth powers.** Gives "politics" a precise, testable meaning and makes the org safe to extend with new roles.
 8. **Explicit state machine, not a general agent framework.** Needed for determinism, replay, forks and cost control. Frameworks like Deep Agents stay optional behind the LLM client.
 9. **Playbook lessons by tag, verified by fork, gated on unseen scenarios.** That is the Version N+1 loop. Rejected: embeddings/vector retrieval (banned "basic RAG" risk, less auditable), unverified self-edits.
-10. **Neon Postgres as the WMS stand-in, local files as the working copy.** Neon makes "plug in your data" demonstrable; local Parquet inputs and a local SQLite run store keep runs fast and wifi-proof. Neon branching for forks is a stretch; app-level forks from daily snapshots are the baseline.
+10. **Local SQLite as the WMS stand-in (revised on the day).** `inputs.db` holds the WMS-like input tables and `runs.db` the run store, behind SQLAlchemy URL switches. Rejected: Neon Postgres (credential and wifi risk, no demo payoff that a local export can't show) and Parquet (a second format to maintain). Forks copy rows from daily snapshots.
 15. **What-ifs see only the past and announced events.** Forecasts resample recent same-weekday history; the target layout uses days 1–60. This removes the held-out leak and makes the prediction-error drift flag meaningful.
 16. **One scoring formula everywhere.** Options, days, runs, the eval and the train/test gate all use the formula in 10.4, so "better" means the same thing in every part of the system.
 17. **Code decides quiet days, hiring and authority; LLMs argue and narrate.** Keeps runs cheap, deterministic and auditable.
@@ -769,6 +772,17 @@ Decisions we made, the alternatives, and why. Revisit only with new evidence.
 12. **Primary track decided at 15:30 by evidence.** Version N+1 if the gate passes, else Done Means Done. Same system either way.
 13. **NemoClaw is stretch, as a meta-harness.** OpenClaw in a NemoClaw sandbox designs scenarios and starts runs through the API; Gemba stays a controlled harness that the designer cannot bypass. Rejected: running the Gemba engine itself inside NemoClaw (custom runtime path, setup risk, no demo payoff). Nano console box is the fallback.
 14. **Characters have names and personalities.** Purely for readability and demo; behavior is driven by owned KPIs, powers and levers, not by personality text.
+
+Decisions settled on the day (Oct 17, after the 11:00 grilling session):
+
+18. **Two-person plan stands.** If the teammate doesn't show by 10:45, switch to the solo cut and plan for Done Means Done from the start.
+19. **Hero cascade made likely, never scripted.** Trap 8 (key-customer concentration) plus a test that the chain fires on at least one seed by 13:50.
+20. **PM service time is 25 s/line** (section 9.2); 18 s is the bare pick time only.
+21. **Static rules use the crew's 200-moves-a-night budget**, so the baseline comparison is fair.
+22. **Done-checks come from a code template**; the chair only picks thresholds within code-set bounds.
+23. **No fallback LLM provider.** We trust Crusoe; latency is handled by moving roles to Nano at the phase 0 gate.
+24. **No mock LLM.** The org and the baselines share a `DecisionPolicy` interface; engine gates run on baselines, org gates run live on Crusoe with the response cache.
+25. **`recordings/` is tracked in git**: `llm_cache.jsonl` (readable diffs) and `hero.db`, for offline tests and `make demo`.
 
 Open questions to settle on the day (with defaults if nobody decides):
 - Exact Super model id: copy from the console at 09:15.
