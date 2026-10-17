@@ -1095,7 +1095,17 @@ class OrgPolicy:
     # ================================================================== positions
     def _options_text(self, with_scores: bool = False) -> str:
         m = self._m
-        lines = [f"REF `{self._disp_ev(m.ref_id)}`: do nothing (the reference every option is scored against)"]
+        ref_k = m.ref.kpis_total if getattr(m, "ref", None) is not None else None
+        ref_note = ""
+        if ref_k is not None:
+            limit = float(self.profile.hard_limits.get("pm_peak_zone_load", 1.10))
+            if m.ref.pm_peak_zone_load > limit:
+                ref_note = (f" REF pm_peak_zone_load is {m.ref.pm_peak_zone_load:.2f}, already over the {limit:.2f} "
+                            "limit: the stale layout overloads the Pick Module until fast SKUs are reslotted, so hard "
+                            "limits are judged against REF (an option breaches only if it is worse than REF). "
+                            "An option at REF's level is feasible; pausing does not lower it.")
+        lines = [f"REF `{self._disp_ev(m.ref_id)}`: do nothing (the reference every option is scored against)."
+                 + ref_note]
         for o in m.active():
             k = o.whatif.kpis_total if o.whatif else None
             s = (f"- `{self._disp_opt(o.option_id)}` \"{o.label}\" by {self.roles[o.proposed_by].name}: "
