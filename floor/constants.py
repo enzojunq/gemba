@@ -59,7 +59,6 @@ NEAR_MISS_P = 0.03
 
 # replenishment
 REPLEN_TRIGGER = 0.10           # request a trip when inventory < this fraction of capacity (spec 9.2: lines wait at 0)
-REPLEN_TRIP_SECONDS_CAL = 300.0 # calibration: 5 min/trip until lane A1 resizes slot capacities (spec says 6)
 DEFAULT_DAYS_COVER = 1.5
 
 # labor economics
