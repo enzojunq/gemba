@@ -39,7 +39,12 @@ def test_template_contents():
     assert scopes == {"daily", "final"}
 
 
-def test_runner_stubs_return_empty():
+def test_runner_returns_all_results_and_skips_missing_derived():
     checks = template(load_profile("customer_first"))
-    assert check_day(checks, Kpis()) == []
-    assert check_final(checks, Kpis()) == []
+    day = check_day(checks, Kpis(on_time_pct=99.0))
+    assert {r.check_name for r in day} == {c.check_name for c in checks if c.scope == "daily"}
+    by = {r.check_name: r for r in day}
+    assert by["daily.on_time_pct"].passed is True
+    assert by["daily.expected_near_misses"].passed is None and by["daily.expected_near_misses"].value is None
+    fin = {r.check_name: r for r in check_final(checks, Kpis(), {"score": 0.1})}
+    assert fin["final.score"].passed is True and fin["final.lph_lift_pct"].passed is None

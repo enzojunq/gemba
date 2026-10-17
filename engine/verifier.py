@@ -15,14 +15,17 @@ Derived metrics (contracts.DERIVED_METRICS), computed by the check runner, never
   measures the run against its REF, "scorecard >= static-rules baseline" is exactly
   `score >= 0` (the baseline scored against itself is 0).
 
-The per-day / final check runner (`check_day`, `check_final`) belongs to another lane.
+`check_day` / `check_final` return one `CheckResult` per check in scope; a derived metric
+missing from `derived` is skipped (`passed=None, value=None`).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from contracts import DoneCheck, Kpis, Profile
+from pydantic import BaseModel
+
+from contracts import DERIVED_METRICS, DoneCheck, Kpis, Profile
 
 DEFAULT_MOVES_BUDGET = 200
 """Nightly reslot move budget (spec 7.1 default 200 legs/night; 11.3 "moves <= budget").
@@ -69,14 +72,49 @@ def template(profile: Profile) -> list[DoneCheck]:
     return daily + final
 
 
-# TODO(lane1): implement the check runner. Each returns the checks that FAILED (empty = pass).
+class CheckResult(BaseModel):
+    """One evaluated check. `passed`/`value` are None when a derived metric was unavailable
+    (the check is skipped, not failed). One `checks` row per result per day."""
+    check_name: str
+    scope: str
+    passed: bool | None
+    value: float | None
+    threshold: float
+
+    def row(self) -> dict:
+        return self.model_dump()
 
 
-def check_day(checks: list[DoneCheck], kpis: Kpis, derived: dict[str, Any] | None = None) -> list[DoneCheck]:
-    """TODO(lane1): evaluate daily-scope checks against one day's KPIs + derived metrics."""
-    return []
+def _value(metric: str, kpis: Kpis, derived: dict[str, Any] | None) -> float | None:
+    if metric in DERIVED_METRICS:
+        v = (derived or {}).get(metric)
+        return None if v is None else float(v)
+    return float(getattr(kpis, metric))
 
 
-def check_final(checks: list[DoneCheck], kpis: Kpis, derived: dict[str, Any] | None = None) -> list[DoneCheck]:
-    """TODO(lane1): evaluate final-scope checks against the aggregated run KPIs + derived metrics."""
-    return []
+def _run(checks: list[DoneCheck], scope: str, kpis: Kpis, derived: dict[str, Any] | None) -> list[CheckResult]:
+    out = []
+    for ch in checks:
+        if ch.scope != scope:
+            continue
+        v = _value(ch.metric, kpis, derived)
+        passed = None if v is None else (v <= ch.threshold + EPS if ch.op == "<=" else v >= ch.threshold - EPS)
+        out.append(CheckResult(check_name=ch.check_name, scope=ch.scope, passed=passed, value=v,
+                               threshold=ch.threshold))
+    return out
+
+
+EPS = 1e-9
+
+
+def check_day(checks: list[DoneCheck], kpis: Kpis, derived: dict[str, Any] | None = None) -> list[CheckResult]:
+    """Evaluate every daily-scope check against one day's KPIs (+ derived metrics, e.g.
+    `expected_near_misses` from the chosen what-if). Returns ALL results; filter on
+    `passed is False` for failures."""
+    return _run(checks, "daily", kpis, derived)
+
+
+def check_final(checks: list[DoneCheck], kpis: Kpis, derived: dict[str, Any] | None = None) -> list[CheckResult]:
+    """Evaluate every final-scope check against the aggregated run KPIs (`aggregate_run`) +
+    derived metrics (`score` vs the REF run, `lph_lift_pct` vs the do-nothing run)."""
+    return _run(checks, "final", kpis, derived)

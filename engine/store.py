@@ -155,8 +155,19 @@ _DAY_TABLES = [
 ]
 
 
+def _decode(k: str, v: Any) -> Any:
+    """JSON-decode known JSON columns. `drift_flags.response` is plain text but shares its
+    name with the JSON `llm_calls.response`, so a value that isn't JSON is returned as-is."""
+    if k not in JSON_COLS or not isinstance(v, str):
+        return v
+    try:
+        return loads(v)
+    except ValueError:
+        return v
+
+
 def _row(r: Any) -> dict:
-    return {k: (loads(v) if k in JSON_COLS else v) for k, v in r._mapping.items()}
+    return {k: _decode(k, v) for k, v in r._mapping.items()}
 
 
 def _causes(caused_by: str | Iterable[str] | None) -> list[str]:
@@ -443,6 +454,40 @@ class RunStore:
                         frontier.append((m, d + 1))
         return out
 
+
+    # ------------------------------------------------------------------ engine-lane additions (B5)
+    def relog_events(self, run_id: str, events: Iterable[c.Event]) -> None:
+        """Insert events_log rows only (no cascade edges), skipping ids already logged. Used by
+        forks for pending consequences: copy_run_prefix copied their edges (written on a day
+        before fork_day) but not their rows (their own day is >= fork_day)."""
+        with self.engine.begin() as conn:
+            for e in events:
+                if conn.execute(select(events_log.c.event_id).where(
+                        events_log.c.run_id == run_id, events_log.c.event_id == e.event_id)).first():
+                    continue
+                conn.execute(insert(events_log).values(
+                    run_id=run_id, event_id=e.event_id, day=e.day, hour=e.hour, kind=e.kind,
+                    args=dumps(e.args), source=e.source, caused_by=e.caused_by))
+
+    def write_checks(self, run_id: str, day: int, rows: list[dict]) -> None:
+        """`checks` rows outside write_day (final-scope results, written on the last day)."""
+        if rows:
+            with self.engine.begin() as conn:
+                conn.execute(insert(checks), [dict(r, run_id=run_id, day=day) for r in rows])
+
+    def drift_flag_rows(self, run_id: str) -> list[dict]:
+        """drift_flags rows as plain dicts. `table("drift_flags")` cannot be used: its
+        `response` column is plain text but shares a name with the JSON `llm_calls.response`."""
+        with self.engine.connect() as conn:
+            return [dict(r._mapping) for r in conn.execute(
+                select(drift_flags).where(drift_flags.c.run_id == run_id).order_by(drift_flags.c.day))]
+
+    def llm_usd_total(self, run_id: str) -> float:
+        from sqlalchemy import func
+        with self.engine.connect() as conn:
+            v = conn.execute(select(func.coalesce(func.sum(llm_calls.c.usd), 0.0))
+                             .where(llm_calls.c.run_id == run_id)).scalar()
+        return float(v or 0.0)
 
 class _Reuse:
     """Context manager that hands back an existing connection without committing."""

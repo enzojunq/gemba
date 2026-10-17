@@ -153,6 +153,8 @@ Invariants A guarantees:
 - `step_day` < 300 ms and a 3-day `whatif` < 1 s on the default scenario.
 - `apply_levers` + `step_day` covers the day 06:00 to 06:00 the next day, including night moves.
 
+**Twin factory (A exposes, B imports).** `engine/run.py`'s `make_twin("auto")` imports `floor.twin` and calls `make_twin()` if present, else `Twin()`. A must expose one of these two names in `floor/twin.py`; until then the engine falls back to `StubTwin` with a warning. This is the whole integration switch.
+
 Deterministic tools agents may call, through B's Analytics role: `slotter.propose_target`, `phaser.rank_moves`, `phaser.select_tonight`, `economics.price_option` (section 9.6). They are A's, take and return contract types or plain dicts, and are documented in their docstrings.
 
 ## 5. `DecisionPolicy` protocol (B implements, engine calls)
