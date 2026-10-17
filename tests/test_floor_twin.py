@@ -437,3 +437,23 @@ def test_progress_reaches_100_and_stall_is_visible(twin):
     s, r = twin.step_day(s, 61, twin.actual_demand(61), [])
     assert r.kpis.moves_done == 0 and twin.view(s).move_queue > 0
     assert any("none are selectable" in v for v in r.violations)
+
+
+def test_real_whatif_safety_matches_actual_night(real_twin):
+    import math
+
+    sc = load_scenario("reslot_default")
+    s0 = real_twin.initial_state(sc)
+    cal = scenario_events(sc)
+    for n in (200, 280):
+        lv = [reslot(n, "w")]
+        w = real_twin.whatif(s0, lv, 3, c.visible(cal, 61))
+        s, _ = real_twin.apply_levers(s0, lv, 61)
+        _, r = real_twin.step_day(s, 61, real_twin.actual_demand(61), [])
+        assert abs(w.kpis_by_day[0].safety_risk_max - r.kpis.safety_risk_max) < 0.15
+        assert w.kpis_by_day[0].safety_risk_max < 1.0 and w.safety_risk_max < 1.0
+        assert w.kpis_by_day[0].moves_done == r.kpis.moves_done == n
+        for v in (w.expected_near_misses, w.kpis_total.near_misses, w.pm_peak_zone_load, w.safety_risk_max):
+            assert isinstance(v, float) and math.isfinite(v)
+        assert all(isinstance(k.near_misses, float) and math.isfinite(k.near_misses) for k in w.kpis_by_day)
+    assert s0.day == 61  # what-if never mutates its input state
