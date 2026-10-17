@@ -9,8 +9,8 @@ Recording (`make demo`, `recordings/hero.db`): customer-first hero `bt-cb97aeb0`
 | Time | On screen (URL or click) | Say |
 |---|---|---|
 | 0:00–0:20 | `/?run=<hero>&day=61` paused. Floor with 28 aisles, Pick Module, dock. | "I was the analytics engineer on a warehouse reslot. The target layout was easy. Getting there while the warehouse kept shipping was not, and the decisions in the daily standup were the real driver. No simulator models those decisions." |
-| 0:20–0:50 | Press play at 16x to day 66. Rack damage closes aisle 7 (hatched). Room: Sam is called in, **VETOED** chip under his seat, stamp over option A, decision title "aisle 7 closed for 5 days; slow night". | "Gemba simulates the warehouse and the people who run it. Every claim cites a simulator run. Safety has a veto, Quality can lock a customer, the director owns priorities." |
-| 0:50–1:20 | Day 67: click the red consequence marker on the timeline. Cascade drawer opens with the chain as one sentence: aggressive night → mis-picks on C001 → escalation → Ellen locks C001 → reslot slows. | "Decisions cascade. That is what hardcoded simulations miss: the follow-up decisions never happen in them." |
+| 0:20–0:50 | Press play at 16x to day 66. Rack damage hits aisle 7. Room: Sam proposes closing aisle 7; it scores −0.05 against doing nothing, Megan keeps the 200-move reslot, and his objection stays on the record. | "Gemba simulates the warehouse and the people who run it. Every claim cites a simulator run. Safety can object and veto, Quality can lock a customer, the director owns priorities." |
+| 0:50–1:20 | Run menu → the big-bang run `ev-98548726` (or `/?run=ev-98548726&day=64`), click the red consequence marker on day 64. Cascade drawer: "On day 61 the big-bang plan chose aggressive night: 1200 slot moves tonight; 8 temps → staging buffer at 100% chokes nearby aisles → customer C001 escalated over mis-picks". Second example in the hero: `/?run=bt-cb97aeb0&day=73` (on-time miss → director called in → Dana decides). | "Decisions cascade. That is what hardcoded simulations miss: the follow-up decisions never happen in them." |
 | 1:20–1:50 | **Fork** button, day 69, preset "pause the reslot 3 days" (the default; "protect the Pick Module" does not diverge yet, COMMS B-2). New run streams ("Live"). **Compare** → verdict sentence at the top, synced timelines, first divergent decision highlighted. | "Fork any day with a different decision and watch the other future, with the price of each trade-off." |
 | 1:50–2:20 | **Scenario** button → type "peak week with 20% absences on the night crew, rack damage in aisle 9 on day 64" → Draft from words → Save & run (policy static for speed). Or: type a disruption in the **Inbox**. | "Any disruption, any month, in plain words. The sandboxed designer can only change inputs; inside a run the org still decides through typed levers." |
 | 2:20–2:45 | B's chart: v0 vs v1 on the unseen test scenarios, static rules as the reference line. Eval table (do-nothing, big bang, static, crew). | "After each run the org reviews its worst cascades, proves a better move by forking, and keeps the lesson only if it wins on scenarios it has never seen." |
@@ -19,8 +19,9 @@ Recording (`make demo`, `recordings/hero.db`): customer-first hero `bt-cb97aeb0`
 ## Numbers you can say (seed 1, days 61–90, measured; see DECISIONS.md)
 
 - Do-nothing: on-time 95.2% on normal days, Pick Module zones 29% over capacity, forklift pickers 81% busy.
-- Static rules (200 slot moves a night): on-time 96.5%, lines per labor hour +22%, Pick Module peak from 1.29 to 0.77, reslot done by day 81, 7 jam hours in the month, all on event days.
-- Naive big bang (everything in two nights with temps): 18 jam hours, mis-picks 1.2% and 1.6% on two days, staging 100% for three nights, on-time 75% on day 63, and the full cascade staging congestion → customer escalation → director escalation.
+- Static rules (200 slot moves a night): on-time 96.5%, lines per labor hour +22%, Pick Module peak from 1.29 to 0.77, reslot done by day 81, 4 jam hours in the month on the final code (recorded `ev-6829bcf3`; 7 in the earlier calibration), all on event days.
+- Naive big bang (everything in two nights with temps), final code (recorded `ev-a960a7b5`): 18 jam hours over the month, 8 of them on day 63 (on-time 75% that day), mis-picks 1.2% and 1.6% on two days, staging 100% for three nights, and the cascade staging congestion → customer escalation → director escalation. (The cascade shot uses `ev-98548726`, an earlier big-bang eval run whose chain reads as one sentence; do not quote its 179 jam hours, it predates the dispatch cap.)
+- The recorded heroes (`bt-cb97aeb0` customer-first, `bt-449cd50d` efficiency-first): reslot 100% on day 79, on-time 95.5% / 95.6%, lines per labor hour +20.7% / +20.8%, 0 vetoes; customer-first beats static rules on score 0.573 vs 0.559 with 19 vs 21 violations (B, PROGRESS_B 15:35).
 - Org run: 10 days for about $0.10 in Nemotron calls; a 30-day run about $0.18, 14 minutes wall.
 - Twin: 75 ms per simulated day, a 3-day what-if in half a second, 2.1 million order lines, 8 built-in traps verified by `make data`.
 
@@ -42,13 +43,14 @@ Recording (`make demo`, `recordings/hero.db`): customer-first hero `bt-cb97aeb0`
 
 ## Video takes on the recording (B's PITCH_1MIN.md, one line per shot)
 
-Console: `make demo`, browser ~1440x900, dark theme, speed 4x, pause on each beat. Every link opens paused with `&autoplay=0`.
+Console: `make demo`, browser ~1440x900 (B's spoken script is `PITCH.md`), dark theme, speed 4x, pause on each beat. Every link opens paused with `&autoplay=0`.
 
 | Pitch line | Open | Do |
 |---|---|---|
 | "Simulators model the floor. Nobody models the meeting." | `/?run=bt-cb97aeb0&day=61` | press play at 16x for a few seconds: slot moves at night, pickers by day |
-| "Every morning they hold a standup... act through typed levers." | `/?run=bt-cb97aeb0&day=66&autoplay=0` | play 4x: rack damage, standup, decision banner lands |
+| "Every morning they hold a standup... act through typed levers." | `/?run=bt-cb97aeb0&day=66&autoplay=0` | play 4x: rack damage, Sam proposes closing aisle 7, Megan keeps the reslot, decision banner lands |
 | "...Quality in the room, SKUs locked..." | `/?run=bt-cb97aeb0&day=71&autoplay=0` | Ellen's LOCKED chip; decision "C001's SKUs locked in place for 3 days" |
+| "An aggressive night of moves causes ... mis-picks, a key-customer escalation" | `/?run=ev-98548726&day=64&autoplay=0` | click the red marker on day 64: aggressive night → staging at 100% → C001 escalated |
 | "You can see the whole chain" | `/?run=bt-cb97aeb0&day=73&autoplay=0` | click the red marker over day 72-73: on-time miss → director called in → Dana decides |
 | "Fork any day with a different call" | `/?compare=bt-cb97aeb0,fk-3b1e986f` | verdict sentence, synced timelines (complete after B's second export) |
 | "customer-first versus efficiency-first" | `/?compare=bt-cb97aeb0,bt-449cd50d` | first divergence day 64: customer-first pauses, efficiency-first moves 200 |

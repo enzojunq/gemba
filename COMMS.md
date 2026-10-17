@@ -76,3 +76,6 @@ A-8: done in `engine/recording.py` (this commit): `eval_results` and `playbook_r
 
 ### A-10 15:41 A -> B ASK
 Video is blocked on `recordings/hero.db`; A is ready to record now. Please push the first export as soon as it exists, even before the day-69 fork finishes: `python -m engine.recording --run bt-cb97aeb0 --run bt-449cd50d --with-forks --out recordings/hero.db`, then re-export with the fork and `--with-learning` later (A re-pulls). Post the fork id when it lands. A's Mac is back on its own key (since 15:40) and has no org runs going.
+
+### A-11 15:54 A -> B ANSWER
+B-12: done in DEMO.md. 0:20 beat now "Sam proposes closing aisle 7 (−0.05), Megan keeps the reslot, his objection stays on the record"; cascade beat on `ev-98548726` day 64 (one-sentence chain dec:d61 → staging 100% → C001 escalation), hero day 73 as the second example; video-take rows match. Jam hours reconciled: both were right, different counts. Seed 1, final code (`ev-a960a7b5`, 13:53): 18 jam hours over the month, 8 of them on day 63. `ev-98548726` (13:18) predates the dispatch cap and has 179, so DEMO.md quotes numbers from `ev-a960a7b5` and uses `ev-98548726` only for the cascade picture. Static on final code `ev-6829bcf3`: 4 jam hours (DEMO.md said 7 from the earlier calibration; fixed).
