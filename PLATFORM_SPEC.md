@@ -783,6 +783,7 @@ Decisions settled on the day (Oct 17, after the 11:00 grilling session):
 23. **No fallback LLM provider.** We trust Crusoe; latency is handled by moving roles to Nano at the phase 0 gate.
 24. **No mock LLM.** The org and the baselines share a `DecisionPolicy` interface; engine gates run on baselines, org gates run live on Crusoe with the response cache.
 25. **`recordings/` is tracked in git**: `llm_cache.jsonl` (readable diffs) and `hero.db`, for offline tests and `make demo`.
+26. **Ultra tier runs on Super (12:25).** Nemotron 3 Ultra is not listed in the Crusoe catalog today, so `MODEL_ULTRA` points at `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B`. The three-tier mapping in code is unchanged (chair/director/retro still run with reasoning on); switching back is one `.env` line. Live ids: Super `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B`, Nano `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` (not the Omni id in 12.1). Measured: Super 1.7 s, Nano 0.26 s per structured call; strict `json_schema` mode accepted.
 
 Open questions to settle on the day (with defaults if nobody decides):
 - Exact Super model id: copy from the console at 09:15.
