@@ -727,3 +727,36 @@ def test_quality_stays_hired_through_key_customer_week(store):
     policy.decide(DAY + 5, view, [week], twin, state)
     policy.decide(DAY + 6, view, [week], twin, state)
     assert "quality" not in policy.present
+
+
+# --------------------------------------------------------------------------- llm_calls.day stamping
+
+
+class SinkLLM(FakeLLM):
+    """A client built with on_call=<sink> (as the CLIs do): its rows carry no day."""
+
+    def __init__(self, script, sink):
+        super().__init__(script)
+        self.on_call = sink
+
+    def complete(self, tier, messages, schema=None, *, role, run_id, **kw):
+        out = super().complete(tier, messages, schema, role=role, run_id=run_id, **kw)
+        self.on_call({"call_id": f"c{len(self.calls)}", "run_id": run_id, "role": role, "model": "fake",
+                      "usd": 0.0, "kind": "llm"})
+        return out
+
+
+def test_on_call_sink_rows_carry_day(store):
+    sink_rows = []
+
+    def sink(row):
+        sink_rows.append(row)
+        store.write_llm_call(row)
+    llm = SinkLLM({("Note", "program_manager"): Note(text="calm")}, sink)
+    policy = OrgPolicy(RUN, load_profile("customer_first"), llm, store)
+    twin, state, view = setup(None, 62)
+    policy.decide(62, view, [], twin, state)
+    assert sink_rows and all(r["day"] == 62 for r in sink_rows)
+    assert rows(store, "llm_calls") and all(r["day"] == 62 for r in rows(store, "llm_calls"))
+    OrgPolicy(RUN, load_profile("customer_first"), llm, store)  # a second policy re-wraps the base sink
+    assert llm.on_call._gemba_base is sink

@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import uuid
 from collections import deque
@@ -67,6 +68,8 @@ COACH_MAX_TOKENS = 2000
 HARD_LIMIT_CHECKS: tuple[str, ...] = ("daily.safety_risk_max", "daily.pm_peak_zone_load",
                                       "daily.expected_near_misses")
 FAILED_CHECK_WEIGHT = 0.25
+# Acceptance margin against noise: a fork must beat the parent by MORE than this (env override).
+RETRO_MIN_DELTA = float(os.environ.get("GEMBA_RETRO_MIN_DELTA", "0.01"))
 TRACE_LOOKAHEAD_DAYS = 5  # consequences up to day+5 can start a trace (C3/C5 are delayed)
 SHOWN_KPIS: tuple[str, ...] = ("on_time_pct", "mispick_rate", "lph", "labor_cost_usd", "reslot_progress_pct",
                                "moves_done", "overtime_hours", "staging_occupancy_max", "safety_risk_max",
@@ -124,12 +127,21 @@ class AcceptedLesson:
     accepted: bool
     fallback_used: bool = False
     chain: str = ""
+    reason: str = ""  # why it was rejected ("" when accepted)
+    min_delta: float = 0.0
+    fork_fallbacks: int = 0
+    parent_fallbacks: int = 0
+    ref_run_id: str = ""
 
     @property
     def evidence(self) -> dict:
         return {"run_id": self.run_id, "day": self.day, "fork_run_id": self.fork_run_id,
                 "score_delta": round(self.score_delta, 6), "decision_id": self.decision_id,
-                "regret_day": self.regret_day}
+                "regret_day": self.regret_day, "delta": round(self.score_delta, 6),
+                "min_delta": self.min_delta, "fork_fallbacks": self.fork_fallbacks,
+                "parent_fallbacks": self.parent_fallbacks, "ref_run_id": self.ref_run_id,
+                "coach_fallback": bool(self.fallback_used), "breaches_parent": self.breaches_parent,
+                "breaches_fork": self.breaches_fork, "reason": self.reason}
 
     def rule(self) -> dict:
         return pb.lesson_rule(self.lesson, self.evidence)
@@ -190,15 +202,17 @@ def run_policy_name(store: RunStore, run_id: str) -> str:
 
 
 def find_ref_run(store: RunStore, run_id: str, *, twin: Any = None, profile: c.Profile | None = None) -> str:
-    """The do-nothing REF run for the same scenario + seed covering every day of `run_id`; run
-    it now (mode "retro") if none exists."""
+    """The do-nothing REF run for the same scenario + seed covering every day of `run_id`. Only a
+    REF created AFTER `run_id` started (`runs.started_at`) is reused -- an older do-nothing run may
+    predate twin/scoring changes -- otherwise a fresh one is run now (mode "retro", LLM-free)."""
     meta = store.get_run(run_id)
     if meta is None:
         raise KeyError(f"unknown run {run_id}")
     need = {r["day"] for r in store.day_results(run_id)}
     for r in store.list_runs():
         if (r["run_id"] == run_id or r.get("parent_run_id") or r.get("status") != "done"
-                or r.get("scenario_id") != meta["scenario_id"] or r.get("seed") != meta["seed"]):
+                or r.get("scenario_id") != meta["scenario_id"] or r.get("seed") != meta["seed"]
+                or (r.get("started_at") or "") <= (meta.get("started_at") or "")):
             continue
         decs = store.decisions(r["run_id"])
         if decs and all(d["decided_by"] == "do_nothing" for d in decs) \
@@ -222,6 +236,56 @@ def hard_breaches(store: RunStore, run_id: str, days: list[int]) -> int:
     return sum(1 for r in store.table("checks", run_id)
                if r.get("day") in ds and r.get("check_name") in HARD_LIMIT_CHECKS
                and r.get("passed") is not None and not r.get("passed"))
+
+
+def is_fallback_row(r: dict) -> bool:
+    return r.get("kind") == "llm_fallback" or bool(r.get("fallback_used"))
+
+
+def fallback_count(store: RunStore, run_id: str, days: list[int] | None = None,
+                   exclude_roles: tuple[str, ...] = (COACH_ROLE,)) -> int:
+    """Fallback `llm_calls` rows of `run_id` (the retro coach's own rows excluded). With `days`,
+    only rows on those days count -- but if any fallback row has day NULL (a client built without
+    the standup's day stamping) it cannot be placed, so every fallback of the run counts."""
+    rows = [r for r in store.table("llm_calls", run_id)
+            if is_fallback_row(r) and r.get("role") not in exclude_roles]
+    if days is None or any(r.get("day") is None for r in rows):
+        return len(rows)
+    ds = set(days)
+    return sum(1 for r in rows if r.get("day") in ds)
+
+
+def _lever_dict(lv: Any) -> dict:
+    d = dict(lv) if isinstance(lv, dict) else lv.model_dump(mode="json")
+    d.pop("decision_id", None)
+    return json.loads(json.dumps(d, sort_keys=True, default=str))
+
+
+def fork_applied_problem(store: RunStore, fork_run_id: str, fday: int, levers: list) -> str:
+    """'' when the fork finished and its fork-day decision applied every alternative lever
+    (matched by kind + args, decision_id ignored) with no rejection, else the reason."""
+    meta = store.get_run(fork_run_id) or {}
+    if meta.get("status") != "done":
+        return f"fork status {meta.get('status')!r}, not 'done'"
+    rows = [d for d in store.decisions(fork_run_id) if d["day"] == fday]
+    if not rows:
+        return f"no fork-day decision on day {fday}"
+    row = rows[0]
+    rej = row.get("rejections") or []
+    if rej:
+        parts = []
+        for r in rej:
+            if isinstance(r, dict):
+                parts.append(f"{_lever_dict(r.get('lever') or {}).get('kind', '?')}: {r.get('reason')}")
+            else:
+                parts.append(str(r))
+        return "alternative rejected by the floor: " + "; ".join(parts)
+    applied = [_lever_dict(x) for x in (row.get("levers") or [])]
+    missing = [a for a in (_lever_dict(x) for x in levers)
+               if not any(all(ap.get(k) == v for k, v in a.items()) for ap in applied)]
+    if missing:
+        return "alternative rejected by the floor: not applied: " + ", ".join(m.get("kind", "?") for m in missing)
+    return ""
 
 
 # --------------------------------------------------------------------------- 1. regret days
@@ -382,7 +446,7 @@ def run_log(store: RunStore, regret: RegretDay, tr: Trace) -> str:
 def coach_task(regret: RegretDay, tr: Trace) -> str:
     from org.standup import LEVER_HELP
     fmt = "\n".join(f"  {v}" for v in LEVER_HELP.values())
-    vocab = ", ".join(sorted(pb.TAG_VOCABULARY))
+    vocab = ", ".join(sorted(_COACH_VOCAB or pb.TAG_VOCABULARY))
     return (f"Propose the alternative decision for day {tr.decision['day']} (it replaces decision "
             f"{tr.decision['decision_id']}; a fork from that day will verify it) and one general Lesson that "
             f"would have prevented the regret on day {regret.day}.\n"
@@ -390,6 +454,23 @@ def coach_task(regret: RegretDay, tr: Trace) -> str:
             f"Lesson tags must come from: {vocab}.\n"
             'Reply JSON {"alternative_levers": [<lever>, ...], "lesson": {"role": "<role id>", "tags": [...], '
             '"trigger": "...", "advice": "<= 40 words"}, "why": "<= 60 words"}.')
+
+
+_COACH_VOCAB: set[str] = set()  # set by retro_full from the train calendars
+EVENT_ONLY_TAGS = ("forklift_breakdown", "wms_sync_delay")
+
+
+def coach_vocab(store: RunStore, run_ids: list[str]) -> set[str]:
+    """KPI/drift tags + the event kinds present in the train runs' calendars (event-only tags such
+    as forklift_breakdown are dropped unless a train scenario actually has them)."""
+    kinds: set[str] = set()
+    for rid in run_ids:
+        try:
+            kinds |= {getattr(e, "kind", None) for e in (getattr(run_scenario(store, rid), "calendar", None) or [])}
+        except Exception:  # noqa: BLE001
+            pass
+        kinds |= {e.get("kind") for e in store.events(rid) if e.get("kind")}
+    return {t for t in pb.TAG_VOCABULARY if t not in EVENT_ONLY_TAGS or t in kinds}
 
 
 def fallback_proposal(regret: RegretDay, tr: Trace) -> CoachProposal:
@@ -440,13 +521,32 @@ def verify(store: RunStore, regret: RegretDay, tr: Trace, proposal: CoachProposa
     pk, fk, ref = _day_kpis(store, rid), _day_kpis(store, child), _day_kpis(store, ref_run_id)
     days = sorted(d for d in fk if d >= fday and d in pk)
     ps, fs = window_score(pk, ref, days, profile), window_score(fk, ref, days, profile)
-    bp, bf = hard_breaches(store, rid, days), hard_breaches(store, child, days)
+    # The fork day's forced decision has no prediction (expected_near_misses passed=None), so
+    # hard-limit breaches are compared over fday+1 .. end for both runs.
+    bdays = [d for d in days if d > fday]
+    bp, bf = hard_breaches(store, rid, bdays), hard_breaches(store, child, bdays)
     delta = fs - ps
+    min_delta = RETRO_MIN_DELTA
+    ffb = fallback_count(store, child, None)
+    pfb = fallback_count(store, rid, days)
+    reasons = []
+    problem = fork_applied_problem(store, child, fday, levers)
+    if problem:
+        reasons.append(problem)
+    if not delta > min_delta:
+        reasons.append(f"delta {delta:+.4f} <= min_delta {min_delta}")
+    if ffb:
+        reasons.append(f"{ffb} llm fallback(s) in the fork")
+    if pfb:
+        reasons.append(f"{pfb} llm fallback(s) in the parent window")
+    if bf > bp:
+        reasons.append(f"hard-limit breaches {bf} > {bp}")
     return AcceptedLesson(lesson=proposal.lesson, alternative_levers=levers, why=proposal.why, run_id=rid,
                           regret_day=regret.day, decision_id=tr.decision["decision_id"], day=fday,
                           fork_run_id=child, score_delta=delta, parent_score=ps, fork_score=fs,
-                          breaches_parent=bp, breaches_fork=bf, accepted=bool(delta > 0 and bf <= bp),
-                          chain=tr.chain)
+                          breaches_parent=bp, breaches_fork=bf, accepted=not reasons,
+                          chain=tr.chain, reason="; ".join(reasons), min_delta=min_delta, fork_fallbacks=ffb,
+                          parent_fallbacks=pfb, ref_run_id=ref_run_id)
 
 
 # --------------------------------------------------------------------------- 5. the loop
@@ -467,6 +567,13 @@ def retro_full(train_run_ids: list[str], *, store: RunStore, llm: Any, twin: Any
     res = RetroResult(candidate_version=pb.next_version(version))
     rules_v = pb.load_rules(store, version)
     for rid in train_run_ids:
+        pv = (store.get_run(rid) or {}).get("playbook_version")
+        if pv != version:
+            raise ValueError(f"train run {rid} used playbook {pv!r}, not {version!r}: retro must coach the "
+                             f"version the train runs were played with")
+    global _COACH_VOCAB
+    _COACH_VOCAB = coach_vocab(store, train_run_ids)
+    for rid in train_run_ids:
         ref_id = find_ref_run(store, rid, twin=twin, profile=prof)
         pname = policy_name or run_policy_name(store, rid)
         pkw = policy_kwargs
@@ -480,6 +587,9 @@ def retro_full(train_run_ids: list[str], *, store: RunStore, llm: Any, twin: Any
             handled.add(tr.decision["decision_id"])
             proposal, used = coach(llm, store, rd, tr)
             res.coach_calls += 1
+            if used:
+                log.warning("coach fallback: no lesson (%s day %s)", rid, rd.day)
+                continue
             verdict = verify(store, rd, tr, proposal, ref_run_id=ref_id, twin=twin, profile=prof,
                              policy_name=pname, horizon=horizon, policy_kwargs=pkw)
             verdict.fallback_used = used
@@ -488,6 +598,8 @@ def retro_full(train_run_ids: list[str], *, store: RunStore, llm: Any, twin: Any
             log.info("retro %s day %s: fork %s delta %+.4f breaches %s/%s -> %s", rid, rd.day,
                      verdict.fork_run_id, verdict.score_delta, verdict.breaches_fork, verdict.breaches_parent,
                      "accepted" if verdict.accepted else "rejected")
+            if verdict.reason:
+                log.info("  reason: %s", verdict.reason)
     fired = pb.fired_counts(store, train_run_ids, rules_v) if rules_v else None
     res.candidate_rules = pb.merge(rules_v, res.accepted, fired)
     if write:

@@ -8,7 +8,13 @@ Contenders: `crew` for v0 (the empty playbook), `crew_<version>` otherwise (eval
 loads each version's non-rejected rules, so the candidate rows are used before promotion).
 On promotion the candidate rows of `version_to` become "active"; otherwise they become
 "rejected" (so `load_rules(version_to)` is then []). Either way one `eval_results` row with
-contender "gate" records the summary (evaluate() already writes one row per run).
+contender "gate" records the summary (evaluate() already writes one row per run; the LLM-free
+"static" baseline is evaluated too so the reference line exists in `eval_results`).
+
+Fallbacks: the `llm_fallback` / `fallback_used` rows in `llm_calls` of each side's runs are
+counted (`fallbacks_from` / `fallbacks_to`). If either side has any, there is no verdict:
+`promoted=False`, `summary["reason"]="fallbacks present: no verdict"`, and the candidate rows
+stay "candidate" (not "rejected").
 
 CLI:
     python -m learn.gate --test test_1,test_2,test_3 --from v0 --to v1 [--profile customer_first] [--seeds 1]
@@ -42,6 +48,15 @@ def contender_for(version: str) -> str:
     return "crew" if version in ("v0", "", None) else f"crew_{version}"
 
 
+def fallback_rows(store: RunStore, rows: list) -> int:
+    """`llm_fallback` / `fallback_used` rows in `llm_calls` over the runs of `rows`."""
+    n = 0
+    for rid in {getattr(r, "run_id", None) for r in rows} - {None}:
+        n += sum(1 for x in store.table("llm_calls", rid)
+                 if x.get("kind") == "llm_fallback" or x.get("fallback_used"))
+    return n
+
+
 def gate(test_scenario_ids: list[str], profile_id: str, version_from: str, version_to: str, *,
          store: RunStore, twin: Any = None, seeds: list[int] | None = None, parallel: int = 4,
          llm: Any = None, days: tuple[int, int] | None = None) -> GateResult:
@@ -56,15 +71,23 @@ def gate(test_scenario_ids: list[str], profile_id: str, version_from: str, versi
         kwargs["llm"] = llm
     if days is not None:
         kwargs["days"] = days
-    rows = evaluate(list(test_scenario_ids), profile_id, [c_from, c_to], seeds, **kwargs)
+    rows = evaluate(list(test_scenario_ids), profile_id, [c_from, c_to, "static"], seeds, **kwargs)
     rows_from = [r for r in rows if r.contender == c_from]
     rows_to = [r for r in rows if r.contender == c_to]
     s = gate_summary(rows_from, rows_to)
     sf, st = float(s["mean_score_v0"]), float(s["mean_score_v1"])
     vf, vt = float(s["violations_v0"]), float(s["violations_v1"])
-    promoted = bool(rows_from and rows_to and st > sf and vt <= vf)
+    fb_from, fb_to = fallback_rows(store, rows_from), fallback_rows(store, rows_to)
+    no_verdict = fb_from > 0 or fb_to > 0
+    promoted = bool(not no_verdict and rows_from and rows_to and st > sf and vt <= vf)
+    s = dict(s, fallbacks_from=fb_from, fallbacks_to=fb_to)
+    if no_verdict:
+        s["reason"] = "fallbacks present: no verdict"
 
-    if promoted:
+    if no_verdict:
+        log.warning("gate: %s fallbacks present (%d from, %d to): no verdict, candidates kept",
+                    version_to, fb_from, fb_to)
+    elif promoted:
         n = store.set_playbook_status(version_to, "active", from_status="candidate")
         log.info("gate: promoted %s (%d rules active)", version_to, n)
     else:
@@ -75,6 +98,8 @@ def gate(test_scenario_ids: list[str], profile_id: str, version_from: str, versi
                                 "version_from": version_from, "version_to": version_to, "promoted": promoted,
                                 "mean_score_from": sf, "mean_score_to": st,
                                 "violations_from": vf, "violations_to": vt,
+                                "fallbacks_from": fb_from, "fallbacks_to": fb_to,
+                                "reason": s.get("reason", ""),
                                 "run_ids": [r.run_id for r in rows]})
     return GateResult(promoted, sf, st, vf, vt, rows, dict(s))
 
@@ -103,7 +128,12 @@ def main(argv: list[str] | None = None) -> int:
                parallel=a.parallel, llm=llm)
     print(f"{a.version_from}: mean score {res.mean_score_from:+.4f}, violations {res.violations_from:.2f}")
     print(f"{a.version_to}: mean score {res.mean_score_to:+.4f}, violations {res.violations_to:.2f}")
-    print(f"{'PROMOTED' if res.promoted else 'NOT promoted'}: {a.version_to}")
+    print(f"fallbacks: {a.version_from} {res.summary.get('fallbacks_from', 0)}, "
+          f"{a.version_to} {res.summary.get('fallbacks_to', 0)}")
+    if res.summary.get("reason"):
+        print(f"NO VERDICT: {res.summary['reason']} -- {a.version_to} stays candidate")
+    else:
+        print(f"{'PROMOTED' if res.promoted else 'NOT promoted'}: {a.version_to}")
     return 0
 
 

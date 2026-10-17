@@ -117,8 +117,8 @@ def test_retro_rejects_worse_alternative(store, parent):
 def test_retro_coach_fallback(store, parent):
     res = retro_full([parent], store=store, llm=FakeCoach(fail=True), twin=StubTwin(), profile="customer_first",
                      max_regret_days=1, horizon=2, policy_name="static")
-    v = (res.accepted + res.rejected)[0]
-    assert v.fallback_used and v.alternative_levers == [c.PauseReslot(days=1)]
+    assert res.accepted == [] and res.rejected == [] and res.forks == 0  # coach fallback: no lesson
+    assert res.coach_calls == 1 and store.playbook_rows("v1") == []
     assert any(r.get("kind") == "llm_fallback" and r.get("role") == "retro_coach"
                for r in store.table("llm_calls", parent))
 
@@ -162,7 +162,7 @@ def test_gate(store, monkeypatch, rows, promoted):
     monkeypatch.setattr("eval.run_eval.evaluate", fake_evaluate)
     res = gate_mod.gate(["test_1", "test_2"], "customer_first", "v0", "v1", store=store, twin=StubTwin(),
                         seeds=[1])
-    assert seen["contenders"] == ["crew", "crew_v1"] and seen["scenario_ids"] == ["test_1", "test_2"]
+    assert seen["contenders"] == ["crew", "crew_v1", "static"] and seen["scenario_ids"] == ["test_1", "test_2"]
     assert res.promoted is promoted
     status = {r["status"] for r in store.playbook_rows("v1")}
     assert status == ({"active"} if promoted else {"rejected"})
@@ -231,3 +231,89 @@ def test_retro_refuses_real_twin_instance(store, parent):
     with pytest.raises(TypeError):
         retro_full([parent], store=store, llm=FakeCoach(PAUSE2), twin=RealishTwin(), profile="customer_first",
                    version="v0", max_regret_days=1, horizon=2, policy_name="static")
+
+
+# ---------------------------------------------------------------- integrity of the acceptance rule
+
+
+def test_retro_rejects_when_floor_rejected_alternative(store, parent, monkeypatch):
+    real = store.decisions
+
+    def decisions(run_id):
+        rows = real(run_id)
+        if (store.get_run(run_id) or {}).get("parent_run_id"):
+            rows = [{**r, "rejections": [{"lever": {"kind": "pause_reslot", "days": 2}, "reason": "nope"}]}
+                    for r in rows]
+        return rows
+    monkeypatch.setattr(store, "decisions", decisions)
+    res = retro_full([parent], store=store, llm=FakeCoach(PAUSE2), twin=StubTwin(), profile="customer_first",
+                     max_regret_days=1, horizon=3, policy_name="static")
+    assert res.accepted == [] and len(res.rejected) == 1
+    v = res.rejected[0]
+    assert v.reason.startswith("alternative rejected by the floor: pause_reslot: nope")
+    assert v.evidence["reason"] == v.reason
+
+
+def test_retro_rejects_below_margin(store, parent, monkeypatch):
+    import learn.retro as rm
+    monkeypatch.setattr(rm, "RETRO_MIN_DELTA", 1e9)
+    res = retro_full([parent], store=store, llm=FakeCoach(PAUSE2), twin=StubTwin(), profile="customer_first",
+                     max_regret_days=1, horizon=3, policy_name="static")
+    assert res.accepted == [] and "min_delta" in res.rejected[0].reason
+    ev_ = res.rejected[0].evidence
+    assert ev_["min_delta"] == 1e9 and "delta" in ev_ and ev_["fork_fallbacks"] == 0 and ev_["parent_fallbacks"] == 0
+
+
+def test_retro_rejects_with_parent_fallbacks(store, parent):
+    import uuid
+    store.write_llm_call(call_id=uuid.uuid4().hex, run_id=parent, day=None, role="ops_manager", model="(code)",
+                         request={}, response={"llm_fallback": True}, usd=0.0, kind="llm_fallback",
+                         fallback_used=True)
+    res = retro_full([parent], store=store, llm=FakeCoach(PAUSE2), twin=StubTwin(), profile="customer_first",
+                     max_regret_days=1, horizon=3, policy_name="static")
+    assert res.accepted == [] and res.rejected[0].parent_fallbacks == 1
+    assert "fallback" in res.rejected[0].reason
+
+
+def test_find_ref_run_ignores_older_do_nothing(store):
+    from engine.run import make_policy
+    sc = c.Scenario.model_validate({**ev.load_scenario("reslot_default").model_dump(), "days": (61, 66)})
+    old = run(sc, "customer_first", make_policy("do_nothing", ""), StubTwin(), store=store, mode="retro")
+    import time
+    time.sleep(0.01)
+    par = run(sc, "customer_first", NaiveBigBang(), StubTwin(), store=store)
+    ref = find_ref_run(store, par, twin=StubTwin(), profile=load_profile("customer_first"))
+    assert ref not in (old, par)
+    assert store.get_run(ref)["started_at"] > store.get_run(par)["started_at"]
+
+
+def test_fork_day_excluded_from_breaches(store, parent, monkeypatch):
+    import learn.retro as rm
+    seen = []
+    real = rm.hard_breaches
+    monkeypatch.setattr(rm, "hard_breaches", lambda s, rid, days: (seen.append(list(days)), real(s, rid, days))[1])
+    res = retro_full([parent], store=store, llm=FakeCoach(PAUSE2), twin=StubTwin(), profile="customer_first",
+                     max_regret_days=1, horizon=3, policy_name="static")
+    v = (res.accepted + res.rejected)[0]
+    assert seen and all(v.day not in ds for ds in seen) and all(min(ds) == v.day + 1 for ds in seen if ds)
+    assert v.evidence["ref_run_id"]
+
+
+def test_retro_asserts_playbook_version(store, parent):
+    with pytest.raises(ValueError, match="playbook"):
+        retro_full([parent], store=store, llm=FakeCoach(PAUSE2), twin=StubTwin(), profile="customer_first",
+                   version="v3", max_regret_days=1, horizon=3, policy_name="static")
+
+
+def test_gate_fallbacks_no_verdict(store, monkeypatch):
+    import uuid
+    _seed_candidate(store)
+    store.write_llm_call(call_id=uuid.uuid4().hex, run_id="rb", day=1, role="ops_manager", model="(code)",
+                         request={}, response={}, usd=0.0, kind="llm_fallback", fallback_used=True)
+    rows = [Row("crew", 0.10, 1, "ra"), Row("crew_v1", 0.50, 0, "rb"), Row("static", 0.0, 0, "rs")]
+    monkeypatch.setattr("eval.run_eval.evaluate", lambda *a, **k: rows)
+    res = gate_mod.gate(["test_1"], "customer_first", "v0", "v1", store=store, twin=StubTwin(), seeds=[1])
+    assert res.promoted is False and res.summary["reason"] == "fallbacks present: no verdict"
+    assert {r["status"] for r in store.playbook_rows("v1")} == {"candidate"}
+    [g] = [r for r in store.table("eval_results") if r["contender"] == "gate"]
+    assert g["metrics"]["fallbacks_from"] == 0 and g["metrics"]["fallbacks_to"] == 1
