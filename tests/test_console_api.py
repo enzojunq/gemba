@@ -280,4 +280,4 @@ def test_describe_uses_designer_without_network(client, monkeypatch):
 
 def test_learning_empty_store_has_shape(client):
     j = client.get("/learning").json()
-    assert set(j) == {"rules", "scenarios", "gate"}
+    assert {"rules", "scenarios", "gate"} <= set(j)

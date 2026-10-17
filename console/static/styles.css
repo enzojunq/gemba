@@ -653,3 +653,13 @@ body.is-compare #btn-play, body.is-compare #speed, body.is-compare #btn-fork, bo
 .rm-empty { margin: 6px; color: var(--text-3); font-size: 13px; }
 .rm-more summary { margin: 2px 6px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-3); font-weight: 600; cursor: pointer; }
 .run-menu[hidden] { display: none; }
+.learn-verdict.is-won { background: var(--green-dim); }
+.learn-verdict.is-lost { background: var(--surface-3); }
+.learn-verdict.is-none { background: var(--red-dim); }
+.lesson-bar { position: relative; height: 10px; border-radius: 5px; background: var(--surface-3); overflow: visible; }
+.lesson-bar i { display: block; height: 100%; border-radius: 5px; background: var(--amber); }
+.lesson-bar i.is-neg { background: var(--red); }
+.lesson-bar b { position: absolute; right: 0; top: -15px; font: 700 12px var(--font-data); color: var(--amber-2); }
+.gate-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 13px; color: var(--text-2); }
+.gate-row b { font-family: var(--font-data); color: var(--text); }
+.gate-row b.is-neg { color: var(--red); }

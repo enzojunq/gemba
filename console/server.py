@@ -688,29 +688,49 @@ def _json(v: Any) -> Any:
 
 @app.get("/learning")
 def learning() -> dict:
-    """Version N+1 for the console: playbook rules with the fork that proved each one, and the
-    eval rows (crew v0 vs crew vN on the test scenarios, static as the reference line)."""
+    """Version N+1 for the console, both outcomes the data supports (COMMS B-13):
+    - rules: each retro lesson with the fork that verified it (rule: fork beats parent, delta > 0),
+    - scenarios: crew v0 vs crew vN per held-out test scenario, static as the reference (from the
+      static row, else derived as score - score_vs_static), with run ids for Compare,
+    - gate: the latest gate row (rule: spec 13.2, mean test score up and violations not up; no
+      verdict when either side had LLM fallbacks)."""
     rules = []
     for r in _q("playbook_rules"):
         ev = _json(r.get("evidence")) or {}
-        rid = ev.get("run_id") if isinstance(ev, dict) else None
-        fid = ev.get("fork_run_id") if isinstance(ev, dict) else None
+        if not isinstance(ev, dict):
+            ev = {}
+        rid, fid = ev.get("run_id"), ev.get("fork_run_id")
         rules.append({"version": r["version"], "rule_id": r["rule_id"], "role_id": role_of(r["role"])["id"],
                       "role": role_name(r["role"]) or r["role"], "title": role_of(r["role"]).get("title", ""),
                       "tags": _json(r.get("tags")) or [], "trigger": plain_text(str(_json(r.get("trigger")) or "")),
                       "advice": plain_text(r["advice"]), "score_delta": r["score_delta"], "status": r["status"],
-                      "day": ev.get("day") if isinstance(ev, dict) else None, "run_id": rid, "fork_run_id": fid,
+                      "day": ev.get("day"), "regret_day": ev.get("regret_day"), "run_id": rid, "fork_run_id": fid,
+                      "parent_score": ev.get("parent_score"), "fork_score": ev.get("fork_score"),
+                      "min_delta": ev.get("min_delta", 0), "fallbacks": (ev.get("fork_fallbacks") or 0) + (ev.get("parent_fallbacks") or 0),
                       "compare": f"{rid},{fid}" if rid and fid and store().get_run(rid) and store().get_run(fid) else None})
     rows = [dict(r, metrics=_json(r.get("metrics")) or {}) for r in _q("eval_results")]
-    gate = [r for r in rows if r["contender"] == "gate"]
-    by: dict[str, dict[str, list[float]]] = {}
+    gates = [r for r in rows if r["contender"] == "gate"]
+    by: dict[str, dict[str, dict]] = {}
     for r in rows:
-        if r["contender"] == "gate" or r["metrics"].get("score") is None or not str(r["scenario_id"]).startswith("test"):
+        m = r["metrics"]
+        if r["contender"] == "gate" or m.get("score") is None or not str(r["scenario_id"]).startswith("test"):
             continue  # the chart is the held-out test set only; train and baseline rows stay out
         name = r["contender"] if r["contender"] != "crew" else "crew_v0"
-        by.setdefault(r["scenario_id"], {}).setdefault(name, []).append(float(r["metrics"]["score"]))
-    scen = [{"scenario": k, "scores": {c: sum(v) / len(v) for c, v in cs.items()}} for k, cs in sorted(by.items())]
-    return {"rules": rules, "scenarios": scen, "gate": gate[-1]["metrics"] if gate else None}
+        sc = by.setdefault(r["scenario_id"], {})
+        sc[name] = {"score": float(m["score"]), "violations": m.get("violations"), "run_id": m.get("run_id")}
+        if name.startswith("crew") and "static" not in sc and m.get("score_vs_static") is not None:
+            sc["static"] = {"score": float(m["score"]) - float(m["score_vs_static"]), "derived": True, "run_id": None}
+    scen = [{"scenario": k, "scores": {c: v["score"] for c, v in cs.items()},
+             "runs": {c: v.get("run_id") for c, v in cs.items() if v.get("run_id")},
+             "violations": {c: v.get("violations") for c, v in cs.items()},
+             "static_derived": bool((cs.get("static") or {}).get("derived"))} for k, cs in sorted(by.items())]
+    gate = None
+    if gates:
+        g = dict(gates[-1]["metrics"])
+        g.setdefault("rule", "spec 13.2: mean test score up and violations not up")
+        gate = g
+    return {"rules": rules, "scenarios": scen, "gate": gate,
+            "rules_rule": "retro: the fork of the regret day must beat the parent (delta > 0; later runs: > 0.01, no LLM fallbacks)"}
 
 
 @app.get("/forks/presets")
