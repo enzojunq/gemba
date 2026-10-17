@@ -13,3 +13,6 @@ __pycache__/
 *.db-shm
 *.db-wal
 fixtures/*.db
+
+# Scenario Designer sandbox bearer token (written into the sandbox, never committed)
+console/designer/skills/gemba/token

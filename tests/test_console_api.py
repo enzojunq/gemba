@@ -250,6 +250,16 @@ def test_bearer_token_guards_writes(client, monkeypatch, scenario_cleanup):
     assert client.get("/scenarios").status_code == 200  # reads stay open
 
 
+def test_token_not_needed_from_this_machine(monkeypatch, scenario_cleanup):
+    """The operator's browser on localhost keeps working with the token on; a wrong token still fails."""
+    from fastapi.testclient import TestClient
+    from console.server import app
+    monkeypatch.setenv("GEMBA_API_TOKEN", "s3cret")
+    local = TestClient(app, client=("127.0.0.1", 50000))
+    assert local.post("/scenarios", json={"yaml": VALID_YAML}).status_code == 200
+    assert local.post("/scenarios", json={"yaml": VALID_YAML}, headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
 def test_describe_uses_designer_without_network(client, monkeypatch):
     """The endpoint's shape over B's describe(), with the LLM replaced by a canned result."""
     import importlib

@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -478,10 +478,14 @@ def _day_bundle(run_id: str, day: int, with_hourly: bool = True) -> dict:
 
 # --------------------------------------------------------------------------- auth (optional)
 
-def require_token(authorization: str | None = Header(default=None)) -> None:
-    """When GEMBA_API_TOKEN is set, writes need `Authorization: Bearer <token>`; unset = open."""
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+def require_token(request: Request, authorization: str | None = Header(default=None)) -> None:
+    """When GEMBA_API_TOKEN is set, writes from other hosts (the sandbox, the LAN) need
+    `Authorization: Bearer <token>`; the operator's own browser on this machine stays open."""
     token = os.environ.get("GEMBA_API_TOKEN")
-    if not token:
+    if not token or (request.client and request.client.host in _LOOPBACK and not authorization):
         return
     if authorization != f"Bearer {token}":
         raise HTTPException(401, "missing or invalid bearer token")
