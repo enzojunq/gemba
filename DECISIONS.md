@@ -50,3 +50,29 @@ Other measured points: step_day 72–80 ms, 3-day what-if ~0.5 s, 30-day run 2.8
 - Surge days 71 and 73 sit at 91–92% on-time under every lever combination tried (replen +2, seasonal slots resized, PM +4): a cutoff-mix effect of those days' orders, not a capacity constraint. Replen capacity is the binding constraint for stockouts during the surge, not for on-time.
 - Big bang's night-time near-misses are expected values near 0.02 per night; the breach shows in `safety_risk_max`, not in drawn near-misses.
 - The mini test fixture (281 lines/day) never queues, so headcount effects on on-time are asserted on the real database only.
+
+## Person B: org, engine and learning (Oct 17)
+
+Measured on the real twin, seed 1, days 61-90, final code (`PROGRESS_B.md` has the per-run detail; ids are in `recordings/hero.db`).
+
+### 1. Measured
+
+| Run | Wall | LLM calls / $ | Meetings (standup / escalation / quiet) | Hires | On-time | Mis-pick | LPH lift | Progress | Score vs do-nothing |
+|---|---|---|---|---|---|---|---|---|---|
+| Static rules (200 legs/night) | 10 s | 0 | - | - | 95.3 | 0.403 | +20.5% | 100% | 0.559 (21 template violations) |
+| Crew, customer-first `bt-cb97aeb0` | 24 min | 209 / $0.30 | 19 / 1 / 10 | 14 | 95.5 | 0.399 | +20.7% | 100% (day 79) | 0.573 (19 violations) |
+| Crew, efficiency-first `bt-449cd50d` | 23 min | 194 / $0.26 | 18 / 1 / 11 | 14 | 95.6 | 0.405 | +20.8% | 100% | 0.575 on the customer-first REF |
+| Fork `fk-3b1e986f` (pause 3 at day 69) | 16 min | - | - | - | - | - | - | 100% (day 79) | identical 8/8 days before 69, different 22/22 after |
+
+Per standup: 5-9 LLM calls, 1 what-if per option plus the do-nothing reference (3-6 per meeting, ~0.5 s each on the real twin); a quiet day is 1 Nano-tier call and 1 what-if. Super with reasoning on: 12-20 s per call, up to 57 s; Super plain: 3-4 s.
+
+### 2. Decisions and why
+
+- **Scoring is the spec 10.4 formula everywhere** (options, days, runs, gate), REF = the do-nothing what-if/run. Consequence worth knowing: on a 3-day horizon under customer-first, a 200-leg night's learning-dip mis-picks (+0.05 pt, weight 0.25 over 0.5 pt) cost more than its 9 pp of progress earn (weight 0.10 over 100 pt), so a customer-first chair rationally pauses on marginal days (hero day 64) while an efficiency-first chair moves. Kept as the profile's voice; the chair prompt says a paused night delays the whole reslot and ties break toward progress.
+- **Feasibility is judged against REF** (`org/scoring.py`): the stale layout starts at PM load 1.3-1.4 against a 1.10 limit (trap 5), so an option breaches only if it is worse than the reference, with a 5% band on PM load; safety stays strict. Without this every reslot option was infeasible and the org only paused.
+- **Code decides, LLMs argue**: quiet days, hiring/release (triggers in the role YAMLs, active while the event lasts), authority at commit (`org/authority.py`), lever validation before the what-if (ids C001-C200 / S0001-S2000, zones 1-6, aisles 1-28, headcount 1..roster cap), contradictory lever sets normalised (pause vs reslot: last word wins), additive options carry the standing reslot, a half-batch option is tabled by code when the engineer's batch breaches, a pause is always tabled when nothing feasible exists, same-outcome options never count as a tie, and the chair's escalate flag needs a code-detected reason.
+- **Done-checks** come from a code template of the profile; the chair picks thresholds within bounds (it chose on-time 97 against the template's 95). The eval table counts violations at the template thresholds for every contender so the crew is not charged for judging itself more strictly.
+- **Lesson acceptance (`learn/retro.py`)**: coach answered without fallback; fork done; its fork-day decision applied every alternative lever with no floor rejections; delta > 0.01 over the next 5 days; no LLM fallback in the fork or in the parent's window; hard-limit breaches not increased after the fork day. Gate (`learn/gate.py`): mean test score up and violations not up on test_1..3; no verdict if either side had fallbacks. Pass-1 retro rejected every lesson under this rule because every window had Crusoe 429s; pass 2 runs serialised on a bumped limit.
+- **Rate limits**: Crusoe's Super request cap is per key and was shared by both laptops; the client retries 429s six times with backoff and positions go serial for the rest of a run after the first 429; eval and retro run one process at a time.
+- **Models**: every call on Nemotron 3 Super on Crusoe (Ultra not in the catalog; Nano mapped to Super for quality); reasoning on only for chair decisions, the director, thresholds and the coach. Tier map is config.
+- **Determinism and replay**: temperature 0, response cache keyed by model + messages + schema (`recordings/llm_cache.jsonl`), per-day pickled snapshots, forks copy the parent's rows before the fork day and restore the org's memory (`org_state`). `recordings/hero.db` is exported with `engine/recording.py` and replays offline.
