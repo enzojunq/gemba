@@ -164,6 +164,22 @@ One section per phase: what was built, how it is tested, what is pending. Update
 3. The day-69 demand surge (x3, 5 days) drives on-time to 69-76% with 2-3k stockout lines/day and 9-10 jam hours. It is the trap biting, but the scorecard sees the 87% mean; worth a look at whether x3 for 5 days is the intended severity.
 4. Static pauses on `replen_alert` (a consequence event) as well as on scripted events. If baselines should only pause on exogenous events, say so and B changes `StaticRules`.
 
+**13:30 integration gate (spec section 20, phase 3) - all four pass on the real twin**
+1. `make run POLICY=static` finishes 30 days (10.4 s).
+2. A cascade chain is in `cascade_edges`: big bang (`ev-98548726`) -> `staging_congestion` (caused by `dec:...-d61`) -> `customer_escalation` (caused by `dec:...-d61`) -> `director_escalation` (caused by `kpi:...:64:on_time_pct`).
+3. Fork at day 69 (`fk-148294a2`, forced `pause_reslot(5)`): identical to the parent on all 8 days before 69, different on 21 of 22 days after; progress held at 37.0 on day 70 while the parent moved on.
+4. Hero cascade fires under big bang (A's `test_floor_twin.py`, seeds 1-3; seen here on seed 1).
+
+**First real eval table** (`eval.run_eval`, reslot_default, customer_first, seed 1, 26 s for three 30-day runs):
+
+| contender | score | score_vs_static | lph_lift_pct | on_time_pct | mispick_rate | violations | progress |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| do_nothing | 0.000 | -0.404 | 0.00 | 85.58 | 0.389 | 85 | 0.0 |
+| big_bang | 0.169 | -0.235 | 19.05 | 84.49 | 0.406 | 93 | 57.5 |
+| static | **0.404** | 0.000 | **20.13** | **87.08** | **0.376** | 87 | **92.4** |
+
+Static beats do-nothing by +20% LPH, as spec 9.3a target 4 expects. Near-misses are 0 for every contender (safety never bites on seed 1); violations are dominated by on-time < 95 on the surge days. Cosmetic: the CLI prints the `static` row twice; to fix in the polish pass.
+
 **Answers to the console lane's questions:**
 1. `drift_flags.response` decoding: fixed on B's side (`_decode` is tolerant).
 2. Constraint `owner_role`: now `args["owner_role"]` if the constraint event carries it, else `decided_by`. The org sets it for locks.
