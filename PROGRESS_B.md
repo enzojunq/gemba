@@ -116,6 +116,12 @@ One section per phase: what was built, how it is tested, what is pending. Update
 **Resolutions:** tie = within 2% of the larger score (floor 0.01); a `director_escalation` event always routes to Dana; Dana may pick a vetoed option (override) but never an infeasible one while a feasible exists; a lock's `protect` is added after evidence without re-running what-ifs; inbox events are effective the same day.
 
 **Known:** on the stub, a 200-move night pushes mis-picks to ~0.53% (> 0.5 target), so the following day is never quiet. Stub calibration, not standup logic; the real twin decides this.
+
+### First live 10-day org run on the stub (run `bt-7c20b8aa`, days 61-70, customer_first) - 12:50
+- 6 standups, 1 escalation meeting, 3 quiet days. 64 LLM calls, 2 safe-default fallbacks, 0 cache hits (fresh run), **$0.0745** (about $0.22 per 30 days, well under the $1.50 cap), 251 s summed latency (positions run in parallel, so wall time is lower).
+- 55 utterances, 24 evidence rows, 18 cascade edges. Hires with triggers: Marcus (labor_shortage, day 63, released 65), Dana (director_escalation, 64, released 66), Sam (rack_damage, 66, released 68), Tom (demand_surge, 67), Ellen (key_customer_week, 69).
+- Decisions: reslot 200 on quiet days; pause on the labor shortage (Megan, then Dana on the escalation); `labor_allocate` 12 forklifts to swing on day 65; `close_aisle(7, 3d)` on the rack damage; `protect KEY1` for the key-customer week. Every rationale cites the option score and KPIs.
+- Daily on-time check failed every day: the stub's baseline on-time is 95.5 against a 97 target, so this is stub calibration. The real twin's calibration target (94-97 on normal days) means the daily check threshold (target - 2 = 95) is where the org will actually be judged.
 ## Integration with A at 13:00 - not started
 ## Phase 4 - hero run, recordings, eval table (B10) - not started
 ## Phase 5 - retro coach, playbook, gate (B11) - not started
