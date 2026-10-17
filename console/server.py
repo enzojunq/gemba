@@ -249,7 +249,11 @@ def plain_text(text: str | None, letters: dict[str, str] | None = None, meeting_
     t = re.sub(r"\bev\d+-\d+\b", "the what-if", t)
     for k in sorted(_METRIC, key=len, reverse=True):
         t = re.sub(r"\b" + k + r"\b", _METRIC[k], t)
-    return re.sub(r"\b([a-z]+)_([a-z_]+)\b", lambda m: m.group(0).replace("_", " "), t)
+    t = re.sub(r"\b([a-z]+)_([a-z_]+)\b", lambda m: m.group(0).replace("_", " "), t)
+    # metric names that reached us with their underscores already turned into spaces
+    for k, v in (("on time pct", "on-time"), ("stockout lines", "stock-outs"), ("mispick rate pct", "mis-picks"), ("mispick rate", "mis-picks")):
+        t = re.sub(r"\b" + k + r"\b", v, t)
+    return t
 
 
 def option_letters(opts: list[dict]) -> dict[str, str]:
