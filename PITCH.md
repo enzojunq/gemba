@@ -3,7 +3,10 @@
 Three pieces: the two-liner, the one-minute submission pitch, the three-minute one-on-one at the laptop.
 Every number is from the recorded runs of 17 Oct in `recordings/hero.db` (customer-first hero
 `bt-cb97aeb0`, efficiency-first `bt-449cd50d`, fork `fk-3b1e986f`, naive big bang `ev-98548726`). Say
-"recorded this afternoon" when replaying; the inbox and the scenario dialog are live.
+"recorded this afternoon" when replaying; the inbox and the scenario dialog are live. **Two consoles on
+stage:** `make demo` (recording; new run / fork / inbox answer 409 there by design) for the replay beats, and
+`make console` (live store, `runs.db`) for the inbox, the scenario "Save & run" and any live fork on a static
+parent. Switch tabs; say which one you are on.
 
 ---
 
