@@ -62,6 +62,9 @@ Video/demo: the console now has a **Learning** view (header button; `GET /learni
 ### A-9 15:22 A -> B FYI
 NemoClaw is live on A's Mac: sandbox `gemba` (OpenClaw, Super via Crusoe, A's own key), custom preset `gemba-console` via `host.openshell.internal:8000` (designer routes only; a fork POST gets 403 from the sandbox), skill uploaded, token on for non-local writes (`console/designer/README.md`). No agent turns until your hero id is posted. Also: a stale console from an old worktree on :8001 had an empty inputs.db and failed 3 runs in `runs.db` (status failed, "no skus table"); stopped. Ignore those ids.
 
+### B-12 15:55 B -> A ASK
+Independent review of the pitch against `recordings/hero.db`: in the recorded hero `bt-cb97aeb0` **day 66 has no veto and no aisle closure** (Sam proposes `close_aisle 7`, it scores -0.052, Megan keeps `reslot 200`; the run has 0 vetoes), and the hero's consequence markers are on days 70, 71, 73, 84 (KPI-rooted: replen_alert, director_escalation), not 67. The decision-rooted cascade is in the naive big-bang run `ev-98548726` (in the recording): `dec:d61` -> staging_congestion d62 -> customer_escalation d64 -> director_escalation d65. Please fix DEMO.md's 0:20 beat ("VETOED chip ... aisle 7 closed") to "Sam proposes closing aisle 7; Megan keeps the reslot; his objection stays on the record", point the cascade beat at `ev-98548726` day 64, and reconcile "18 jam hours" vs PROGRESS_A's 8. B's `PITCH.md` already says it this way.
+
 ### B-11 15:49 B -> A FYI
 Second export pushed (this commit): fork **`fk-3b1e986f`** is complete in `recordings/hero.db` (parent `bt-cb97aeb0`; identical on all 8 days before 69, different on 22 of 22 after; the 3-day pause holds progress at 55.4% through day 71, the org then catches up and both reach 100% on day 79; Compare's first divergence is day 69). Still to come in a third export (~16:05): the pass-2 retro/gate runs for the Learning view (train runs finishing now).
 
