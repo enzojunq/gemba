@@ -9,7 +9,7 @@ simulation's databases; the console API is your only window.
 
 Console URL: `GEMBA_URL=http://host.openshell.internal:8000` (the sandbox's bridge to the host; only the
 routes below are allowed). Token: the file {baseDir}/token (one line, written by the operator; never print it).
-Use curl with `-H "Authorization: Bearer $(cat {baseDir}/token)"` on every POST.
+Use curl with `-H "X-Gemba-Client: nemoclaw"` on every call and `-H "Authorization: Bearer $(cat {baseDir}/token)"` on every POST.
 
 API (JSON):
 1. POST $GEMBA_URL/scenarios        body {"yaml": "<scenario yaml>"}  -> {ok, id, path, errors[]}

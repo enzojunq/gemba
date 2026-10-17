@@ -61,6 +61,7 @@ async function boot() {
   }
   let runId = q.get("run");
   const runs = await fetch("/runs").then((r) => r.json());
+  setSandboxPill(runs.sandbox_seen);
   if (!runId) {
     // Open a run where the org actually met (LLM cost > 0) before any rules-only baseline run.
     const top = [...runs.runs.filter((r) => !r.parent_run_id && r.mode !== "eval" && r.profile === "customer_first"),
@@ -114,6 +115,15 @@ async function refreshRunHeader() {
   renderInbox(run.inbox || []);
 }
 // "done" would tell a judge the demo is over: say what the console is doing with the run instead.
+function setSandboxPill(seen) {
+  const el = $("#f-sandbox");
+  if (!seen) { el.hidden = true; return; }
+  const at = (seen.at || "").slice(11, 16);
+  el.textContent = "NemoClaw connected";
+  el.title = `The Scenario Designer agent runs in the NemoClaw sandbox "${seen.sandbox || "gemba"}" (OpenShell) and last called this console${at ? ` at ${at}` : ""} (${seen.path || ""}).`;
+  el.hidden = false;
+}
+
 function setStatusPill(run) {
   const st = $("#f-status");
   const live = run.status === "running" || run.status === "queued";

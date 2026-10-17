@@ -40,6 +40,8 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 @app.middleware("http")
 async def _no_stale_static(request, call_next):
     """ES modules and CSS are revalidated on every load so edits show up without a hard refresh."""
+    if request.headers.get("x-gemba-client", "").lower() == "nemoclaw":
+        _note_sandbox_call(request.url.path)
     resp = await call_next(request)
     if request.url.path.startswith("/static") or request.url.path == "/":
         resp.headers["Cache-Control"] = "no-cache"
@@ -530,6 +532,23 @@ def _note_sandbox_run(run_id: str) -> None:
     SANDBOX_RUNS.write_text(json.dumps(ids, indent=0) + "\n", encoding="utf-8")
 
 
+SANDBOX_SEEN = Path(__file__).resolve().parent / "designer" / "sandbox_seen.json"
+"""When the Scenario Designer sandbox last called this API (it sends `X-Gemba-Client: nemoclaw`).
+A small file, so the header chip survives a console restart and a recording replay can show it."""
+
+
+def _sandbox_seen() -> dict | None:
+    try:
+        return json.loads(SANDBOX_SEEN.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _note_sandbox_call(path: str) -> None:
+    SANDBOX_SEEN.write_text(json.dumps({"client": "nemoclaw", "sandbox": "gemba", "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                        "path": path}) + "\n", encoding="utf-8")
+
+
 _LIVE: set[str] = set()  # runs started by this console process (forks and POST /runs)
 
 
@@ -558,7 +577,7 @@ def list_runs() -> dict:
         if h["status"] == "running" and r["run_id"] not in _LIVE:
             h["status"] = "stopped"
         out.append(h)
-    return {"recorded": recorded(), "store": store().url, "runs": out}
+    return {"recorded": recorded(), "store": store().url, "runs": out, "sandbox_seen": _sandbox_seen()}
 
 
 @app.get("/runs/{run_id}")
@@ -1085,4 +1104,4 @@ def describe_scenario(body: DescribeIn) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "store": store().url, "recorded": recorded(), "t": time.time()}
+    return {"ok": True, "store": store().url, "recorded": recorded(), "t": time.time(), "sandbox_seen": _sandbox_seen()}

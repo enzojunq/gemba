@@ -42,6 +42,7 @@
     <button type="button" class="run-title run-pick" id="f-title" title="" aria-haspopup="listbox" aria-expanded="false"><span id="f-title-text">—</span><svg class="ic run-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     <span class="fact fact-lineage" id="f-lineage" hidden><svg class="ic"><use href="#i-fork"/></svg><span id="f-lineage-text"></span></span>
     <span class="pill pill-status" id="f-status" title="">—</span>
+    <span class="pill pill-sandbox" id="f-sandbox" hidden title="The Scenario Designer agent runs in a NemoClaw sandbox (OpenShell) and reaches this console through its API"></span>
   </div>
   <div class="clock" id="clock" aria-live="off">
     <span class="clock-day" id="clock-day">Day —</span>
@@ -173,7 +174,7 @@
   <form method="dialog" class="dlg-form sc-form" id="scenario-form" onsubmit="return false">
     <div class="sc-head">
       <h3><svg class="ic"><use href="#i-bolt"/></svg>Scenario</h3>
-      <p class="dlg-lede">Script the month the org has to get through: events, demand twists and staffing. Saved as a YAML file the engine can run.</p>
+      <p class="dlg-lede">Script the month the org has to get through: events, demand twists and staffing. Saved as a YAML file the engine can run. The same job runs as an agent in a <b>NemoClaw</b> sandbox (OpenShell policy: it may write scenarios and start runs through this API, nothing else); runs it starts are tagged "via NemoClaw" in the run menu.</p>
       <select id="sc-load" class="sc-load" aria-label="Load an existing scenario"></select>
       <button type="button" class="btn" id="sc-new">New</button>
     </div>

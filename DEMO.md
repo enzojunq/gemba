@@ -43,7 +43,7 @@ Recording (`make demo`, `recordings/hero.db`): customer-first hero `bt-cb97aeb0`
 
 ## Video takes on the recording (B's PITCH_1MIN.md, one line per shot)
 
-Console: `make demo`, browser ~1440x900 (B's spoken script is `PITCH.md`). `make demo` replays the recording and refuses live work with a readable message (new run, fork, inbox: "This console is replaying a recording… start the live console"). Scenario → Draft from words → Save works there (it writes a YAML file); "Save & run", the Inbox and a live Fork need `make console` (live store, your Crusoe key). Do those beats on `make console` with the 10-day org run `bt-6b1c573e`, or skip them., dark theme, speed 4x, pause on each beat. Every link opens paused with `&autoplay=0`.
+Console: `make demo`, browser ~1440x900 (B's spoken script is `PITCH.md`). Before recording, light the header chip "NemoClaw connected" with one real call from the sandbox (it writes `console/designer/sandbox_seen.json`, per machine): `nemoclaw gemba exec -- curl -s -H "X-Gemba-Client: nemoclaw" http://host.openshell.internal:8000/health` (Docker's bin on PATH). The run menu names the model behind each run (Nemotron 3 Super on Crusoe) and tags runs the sandbox started "via NemoClaw". `make demo` replays the recording and refuses live work with a readable message (new run, fork, inbox: "This console is replaying a recording… start the live console"). Scenario → Draft from words → Save works there (it writes a YAML file); "Save & run", the Inbox and a live Fork need `make console` (live store, your Crusoe key). Do those beats on `make console` with the 10-day org run `bt-6b1c573e`, or skip them., dark theme, speed 4x, pause on each beat. Every link opens paused with `&autoplay=0`.
 
 | Pitch line | Open | Do |
 |---|---|---|
