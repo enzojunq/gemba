@@ -364,7 +364,7 @@ $("#talk-form").addEventListener("submit", async (e) => {
   if (!text) return;
   input.value = ""; $("#talk-send").disabled = true;
   talkMsg("You", text);
-  const wait = talkMsg("Gemba", "Thinking in the sandbox… (the agent may write a scenario and start a run; 10 s to a few minutes)", "is-wait");
+  const wait = talkMsg("Gemba", "Thinking in the sandbox…", "is-wait");
   try {
     const r = await fetch("/designer/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, session: talkSession }) });
     const j = await r.json();

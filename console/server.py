@@ -882,9 +882,15 @@ def designer_ask(body: AskIn) -> dict:
              "Message from the operator at the console: ")
     t0 = time.time()
     reply, raw, err = "", "", ""
+    scripted = _talk_script()
+    hit = next((k for k in scripted if k not in ("default", "_about") and k in text.lower()), None)
+    if hit and os.environ.get("GEMBA_TALK_LIVE_FIRST") != "1":
+        # Demo: a prepared answer wins on a known question, instantly; unknown questions go to the agent.
+        return {"ok": True, "session": session, "reply": scripted[hit], "scripted": True, "why": "prepared answer",
+                "seconds": 0.0, "raw": "", "sandbox_seen": _sandbox_seen()}
     try:
         proc = subprocess.run([exe, "gemba", "agent", "--agent", "main", "--session-id", session, "-m", steer + text, "--json"],
-                              capture_output=True, text=True, timeout=float(os.environ.get("GEMBA_TALK_TIMEOUT_S") or 20), env=env)
+                              capture_output=True, text=True, timeout=float(os.environ.get("GEMBA_TALK_TIMEOUT_S") or 8), env=env)
         raw = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
         reply = _agent_reply(proc.stdout or "") if proc.stdout.strip() else ""
         if proc.returncode != 0 and not proc.stdout.strip():
@@ -894,8 +900,7 @@ def designer_ask(body: AskIn) -> dict:
     # Demo fallback: a slow or empty agent turn gets the scripted Gemba answer (marked as such).
     bad = (not reply) or reply.startswith("{") or "no final summary" in reply.lower()
     if bad:
-        scripted = _talk_script()
-        key = next((k for k in scripted if k != "default" and k != "_about" and k in text.lower()), "default")
+        key = hit or "default"
         return {"ok": True, "session": session, "reply": scripted.get(key, scripted.get("default", "")), "scripted": True,
                 "why": err or "agent gave no text", "seconds": round(time.time() - t0, 1), "raw": raw[-2000:], "sandbox_seen": _sandbox_seen()}
     return {"ok": True, "session": session, "reply": reply, "scripted": False, "seconds": round(time.time() - t0, 1),
