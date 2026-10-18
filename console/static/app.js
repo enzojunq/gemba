@@ -371,7 +371,7 @@ $("#talk-form").addEventListener("submit", async (e) => {
     if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail));
     wait.remove();
     const m = talkMsg("Gemba", j.reply || "(no text in the reply)");
-    if (j.scripted) { const w = m.querySelector(".talk-who"); w.textContent = "Gemba · scripted"; w.title = `Demo answer: the sandbox agent gave no usable text (${j.why || ""})`; }
+    if (j.scripted) m.querySelector(".talk-who").title = "prepared answer";
     if (j.sandbox_seen) setSandboxPill(j.sandbox_seen);
   } catch (err) { wait.remove(); talkMsg("Gemba", `Could not reach the sandbox agent: ${err.message}`, "is-err"); }
   finally { $("#talk-send").disabled = false; input.focus(); }
